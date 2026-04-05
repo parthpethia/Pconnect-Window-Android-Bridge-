@@ -62,7 +62,7 @@ internal sealed class WebSocketHandler
                             v = 1,
                             type = "helloAck",
                             pcName = Environment.MachineName,
-                            capabilities = new[] { "lock", "text", "launch", "show" }
+                            capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard" }
                         }, ct);
                     }
                     else
@@ -94,7 +94,7 @@ internal sealed class WebSocketHandler
                     authed = true;
 
                     await SendAsync(ws, new { v = 1, type = "paired", deviceId, token }, ct);
-                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show" } }, ct);
+                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard" } }, ct);
                     continue;
                 }
 
@@ -105,8 +105,14 @@ internal sealed class WebSocketHandler
             switch (type)
             {
                 case "lock":
-                    _pc.Lock();
-                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                    if (_pc.Lock())
+                    {
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                    }
+                    else
+                    {
+                        await SendAsync(ws, new { v = 1, type = "error", message = "Lock failed" }, ct);
+                    }
                     break;
 
                 case "input":
@@ -137,6 +143,59 @@ internal sealed class WebSocketHandler
                     _ui.ShowAgentUi();
                     await SendAsync(ws, new { v = 1, type = "ok" }, ct);
                     break;
+
+                case "mouseMove":
+                {
+                    var dx = msg.GetIntOrDefault("dx", 0);
+                    var dy = msg.GetIntOrDefault("dy", 0);
+                    _pc.MouseMove(dx, dy);
+                    break;
+                }
+
+                case "mouseScroll":
+                {
+                    var dy = msg.GetIntOrDefault("dy", 0);
+                    _pc.MouseScroll(dy);
+                    break;
+                }
+
+                case "mouseButton":
+                {
+                    var button = msg.GetStringOrNull("button") ?? string.Empty;
+                    var action = msg.GetStringOrNull("action") ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(button) || string.IsNullOrWhiteSpace(action))
+                    {
+                        await SendAsync(ws, new { v = 1, type = "error", message = "Missing button/action" }, ct);
+                        break;
+                    }
+
+                    _pc.MouseButton(button, action);
+                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                    break;
+                }
+
+                case "key":
+                {
+                    var vk = msg.GetIntOrDefault("vk", 0);
+                    var action = msg.GetStringOrNull("action") ?? string.Empty;
+                    var extended = msg.GetBoolOrDefault("extended", false);
+
+                    if (vk <= 0 || vk > 0xFF)
+                    {
+                        await SendAsync(ws, new { v = 1, type = "error", message = "Invalid vk" }, ct);
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(action))
+                    {
+                        await SendAsync(ws, new { v = 1, type = "error", message = "Missing action" }, ct);
+                        break;
+                    }
+
+                    _pc.Key((ushort)vk, action, extended);
+                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                    break;
+                }
 
                 default:
                     await SendAsync(ws, new { v = 1, type = "error", message = $"Unknown type: {type}" }, ct);
@@ -223,6 +282,21 @@ internal static class JsonDictExtensions
         return el.ValueKind switch
         {
             JsonValueKind.Number when el.TryGetInt32(out var v) => v,
+            _ => fallback,
+        };
+    }
+
+    public static bool GetBoolOrDefault(this Dictionary<string, JsonElement> dict, string key, bool fallback)
+    {
+        if (!dict.TryGetValue(key, out var el))
+        {
+            return fallback;
+        }
+
+        return el.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
             _ => fallback,
         };
     }

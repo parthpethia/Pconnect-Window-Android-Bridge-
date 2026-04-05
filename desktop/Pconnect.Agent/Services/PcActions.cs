@@ -10,7 +10,45 @@ internal sealed class PcActions
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool LockWorkStation();
 
-    public void Lock() => LockWorkStation();
+    public bool Lock()
+    {
+        // Prefer the OS API. In some environments this may return false (policy/session issues).
+        if (LockWorkStation())
+        {
+            return true;
+        }
+
+        // Fallback #1: rundll32 invocation of the same API.
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = "rundll32.exe",
+                Arguments = "user32.dll,LockWorkStation",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            if (p is not null)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        // Fallback #2: simulate Win+L.
+        try
+        {
+            _keyboard.SendWinL();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public void TypeText(int backspaces, string text)
     {
@@ -42,5 +80,88 @@ internal sealed class PcActions
         }
 
         Process.Start(psi);
+    }
+
+    public void MouseMove(int dx, int dy)
+    {
+        _keyboard.MoveMouseBy(dx, dy);
+    }
+
+    public void MouseScroll(int wheelDelta)
+    {
+        _keyboard.ScrollWheel(wheelDelta);
+    }
+
+    public void MouseButton(string button, string action)
+    {
+        // Normalize
+        button = button.Trim().ToLowerInvariant();
+        action = action.Trim().ToLowerInvariant();
+
+        if (action == "click")
+        {
+            switch (button)
+            {
+                case "left":
+                    _keyboard.LeftClick();
+                    return;
+                case "right":
+                    _keyboard.RightClick();
+                    return;
+                case "middle":
+                    _keyboard.MiddleClick();
+                    return;
+            }
+        }
+
+        if (action == "down")
+        {
+            switch (button)
+            {
+                case "left":
+                    _keyboard.LeftDown();
+                    return;
+                case "right":
+                    _keyboard.RightDown();
+                    return;
+                case "middle":
+                    _keyboard.MiddleDown();
+                    return;
+            }
+        }
+
+        if (action == "up")
+        {
+            switch (button)
+            {
+                case "left":
+                    _keyboard.LeftUp();
+                    return;
+                case "right":
+                    _keyboard.RightUp();
+                    return;
+                case "middle":
+                    _keyboard.MiddleUp();
+                    return;
+            }
+        }
+    }
+
+    public void Key(ushort vk, string action, bool extended)
+    {
+        action = action.Trim().ToLowerInvariant();
+
+        switch (action)
+        {
+            case "press":
+                _keyboard.SendVk(vk);
+                break;
+            case "down":
+                _keyboard.SendVkDown(vk, extended);
+                break;
+            case "up":
+                _keyboard.SendVkUp(vk, extended);
+                break;
+        }
     }
 }

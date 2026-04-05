@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -24,6 +25,9 @@ internal sealed class AgentRuntime : IDisposable
     private readonly WebSocketHandler _ws;
     private readonly DiscoveryResponder _discovery;
 
+    public bool IsDiscoveryEnabled { get; private set; }
+    public string? DiscoveryStartError { get; private set; }
+
     public AgentRuntime(IUiActions ui)
     {
         _ui = ui;
@@ -43,7 +47,18 @@ internal sealed class AgentRuntime : IDisposable
 
         PairedDevices.Load();
         Pairing.StartRotation();
-        _discovery.Start();
+        try
+        {
+            _discovery.Start();
+            IsDiscoveryEnabled = true;
+            DiscoveryStartError = null;
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        {
+            // Keep the agent running (WebSocket server still works); only discovery is disabled.
+            IsDiscoveryEnabled = false;
+            DiscoveryStartError = $"Discovery is disabled because UDP port {DefaultDiscoveryPort} is already in use. Close other Pconnect instances (tray) or free the port, then restart.";
+        }
 
         _runTask = Task.Run(() => RunWebHostAsync(_cts.Token));
     }

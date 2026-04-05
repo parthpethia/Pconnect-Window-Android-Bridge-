@@ -32,6 +32,11 @@ internal sealed class TrayAppContext : ApplicationContext
             ContextMenuStrip = menu,
         };
         _tray.DoubleClick += (_, _) => ShowPairingCode();
+
+        if (!_runtime.IsDiscoveryEnabled && !string.IsNullOrWhiteSpace(_runtime.DiscoveryStartError))
+        {
+            _tray.ShowBalloonTip(6000, "Pconnect", _runtime.DiscoveryStartError, ToolTipIcon.Warning);
+        }
     }
 
     private void ShowPairingCode()

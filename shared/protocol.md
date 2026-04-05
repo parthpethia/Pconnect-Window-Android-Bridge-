@@ -86,6 +86,28 @@ Client → PC
 
 - The PC will send `backspaces` times the Backspace key, then type `text` as Unicode.
 
+### Keyboard (virtual-key events)
+
+Use this for modifier keys (Ctrl/Shift/Alt/Win) and key combos.
+
+Client → PC
+
+```json
+{ "v": 1, "type": "key", "vk": 65, "action": "press" }
+```
+
+```json
+{ "v": 1, "type": "key", "vk": 17, "action": "down" }
+```
+
+```json
+{ "v": 1, "type": "key", "vk": 17, "action": "up" }
+```
+
+- `vk`: Win32 virtual-key code (integer)
+- `action`: `press` | `down` | `up`
+- Optional: `extended`: boolean (for extended keys like arrows)
+
 ### Launch an application
 
 Client → PC
@@ -101,6 +123,49 @@ Client → PC
 ```json
 { "v": 1, "type": "show" }
 ```
+
+### Mouse / Trackpad control
+
+These messages are designed to be sent frequently (especially `mouseMove`).
+
+#### Move mouse (relative)
+
+Client → PC
+
+```json
+{ "v": 1, "type": "mouseMove", "dx": 12, "dy": -4 }
+```
+
+- `dx`, `dy` are relative deltas (pixels).
+
+#### Scroll (vertical mouse wheel)
+
+Client → PC
+
+```json
+{ "v": 1, "type": "mouseScroll", "dy": -120 }
+```
+
+- `dy` is the wheel delta (same convention as Win32 wheel delta; a common notch is `120`).
+
+#### Mouse button
+
+Client → PC
+
+```json
+{ "v": 1, "type": "mouseButton", "button": "left", "action": "click" }
+```
+
+```json
+{ "v": 1, "type": "mouseButton", "button": "left", "action": "down" }
+```
+
+```json
+{ "v": 1, "type": "mouseButton", "button": "left", "action": "up" }
+```
+
+- `button`: `left` | `right` | `middle`
+- `action`: `click` | `down` | `up`
 
 ## Error
 

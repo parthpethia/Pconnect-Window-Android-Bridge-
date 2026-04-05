@@ -29,10 +29,29 @@ internal sealed class DiscoveryResponder : IDisposable
         }
 
         _cts = new CancellationTokenSource();
-        _udp = new UdpClient(_listenPort);
-        _udp.EnableBroadcast = true;
+        try
+        {
+            _udp = new UdpClient(_listenPort);
+            _udp.EnableBroadcast = true;
+            _task = Task.Run(() => RunAsync(_cts.Token));
+        }
+        catch
+        {
+            try
+            {
+                _cts.Cancel();
+            }
+            catch
+            {
+                // ignore
+            }
 
-        _task = Task.Run(() => RunAsync(_cts.Token));
+            _udp?.Dispose();
+            _udp = null;
+            _cts.Dispose();
+            _cts = null;
+            throw;
+        }
     }
 
     private async Task RunAsync(CancellationToken ct)

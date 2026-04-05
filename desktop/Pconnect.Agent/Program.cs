@@ -9,6 +9,18 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        using var singleInstanceMutex = new Mutex(initiallyOwned: true, name: "Local\\Pconnect.Agent", createdNew: out var createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "Pconnect Agent is already running. Check the tray (system notification area).",
+                "Pconnect",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            Environment.ExitCode = 0;
+            return;
+        }
+
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             if (e.ExceptionObject is Exception ex)
