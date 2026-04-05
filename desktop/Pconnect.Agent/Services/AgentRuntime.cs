@@ -102,35 +102,31 @@ internal sealed class AgentRuntime : IDisposable
 
     private async Task RunWebHostAsync(CancellationToken ct)
     {
-        var builder = Host.CreateDefaultBuilder();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseKestrel(options => { options.ListenAnyIP(DefaultWsPort); });
 
-        builder.ConfigureWebHostDefaults(webBuilder =>
+        var app = builder.Build();
+
+        app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
+
+        app.MapGet("/health", () => Results.Text("ok"));
+
+        app.Map("/ws", async context =>
         {
-            webBuilder.UseKestrel(options => { options.ListenAnyIP(DefaultWsPort); });
-            webBuilder.Configure(app =>
+            if (!context.WebSockets.IsWebSocketRequest)
             {
-                app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
+                context.Response.StatusCode = 400;
+                await context.Response.WriteAsync("WebSocket expected", ct);
+                return;
+            }
 
-                app.MapGet("/health", () => Results.Text("ok"));
-
-                app.Map("/ws", async context =>
-                {
-                    if (!context.WebSockets.IsWebSocketRequest)
-                    {
-                        context.Response.StatusCode = 400;
-                        await context.Response.WriteAsync("WebSocket expected", ct);
-                        return;
-                    }
-
-                    using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-                    var remoteIp = context.Connection.RemoteIpAddress;
-                    await _ws.HandleConnectionAsync(webSocket, remoteIp, ct);
-                });
-            });
+            using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            var remoteIp = context.Connection.RemoteIpAddress;
+            await _ws.HandleConnectionAsync(webSocket, remoteIp, ct);
         });
 
-        _host = builder.Build();
-        await _host.RunAsync(ct);
+        _host = app;
+        await app.RunAsync(ct);
     }
 
     public void Dispose()

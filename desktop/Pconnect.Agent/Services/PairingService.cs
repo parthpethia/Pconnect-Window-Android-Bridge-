@@ -5,14 +5,14 @@ namespace Pconnect.Agent.Services;
 internal sealed class PairingService : IDisposable
 {
     private readonly object _gate = new();
-    private readonly Timer _timer;
+    private readonly System.Threading.Timer _timer;
 
     public string CurrentCode { get; private set; } = GenerateCode();
 
     public PairingService()
     {
         // Rotate every 5 minutes by default.
-        _timer = new Timer(_ => Rotate(), null, Timeout.Infinite, Timeout.Infinite);
+        _timer = new System.Threading.Timer(_ => Rotate(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public void StartRotation(TimeSpan? interval = null)

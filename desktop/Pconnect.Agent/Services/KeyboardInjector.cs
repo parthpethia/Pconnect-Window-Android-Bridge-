@@ -47,8 +47,8 @@ internal sealed class KeyboardInjector
         var idx = 0;
         for (var i = 0; i < count; i++)
         {
-            inputs[idx++] = Key(VK_BACK, 0, 0);
-            inputs[idx++] = Key(VK_BACK, 0, KEYEVENTF_KEYUP);
+            inputs[idx++] = Key(VK_BACK, '\0', 0);
+            inputs[idx++] = Key(VK_BACK, '\0', KEYEVENTF_KEYUP);
         }
 
         _ = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());

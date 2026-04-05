@@ -6,7 +6,7 @@ internal sealed class PairingForm : Form
 {
     private readonly Label _codeLabel;
     private readonly Label _urlLabel;
-    private readonly Timer _timer;
+    private readonly System.Windows.Forms.Timer _timer;
     private readonly AgentRuntime _runtime;
 
     public PairingForm(AgentRuntime runtime, string code)
@@ -77,7 +77,7 @@ internal sealed class PairingForm : Form
         Controls.Add(copyButton);
         Controls.Add(closeButton);
 
-        _timer = new Timer { Interval = 1000 };
+        _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => RefreshCode();
         _timer.Start();
     }
