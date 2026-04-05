@@ -1,0 +1,22 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# VS / Rider
+.vs/
+.idea/
+
+# Flutter / Dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local state
+**/paired-devices.json
+**/appsettings.local.json
