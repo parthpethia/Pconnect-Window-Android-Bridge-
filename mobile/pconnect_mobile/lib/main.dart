@@ -447,7 +447,39 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
 
                       if (confirmed == true) {
-                        conn.shutdownPc();
+                        final pinController = TextEditingController();
+                        final pin = await showDialog<String>(
+                          context: context,
+                          builder: (context) {
+                            return AlertDialog(
+                              title: const Text('Enter shutdown password'),
+                              content: TextField(
+                                controller: pinController,
+                                keyboardType: TextInputType.number,
+                                obscureText: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Password',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.of(context).pop(),
+                                  child: const Text('Cancel'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.of(context)
+                                      .pop(pinController.text.trim()),
+                                  child: const Text('Continue'),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+
+                        if (pin != null && pin.isNotEmpty) {
+                          conn.shutdownPc(password: pin);
+                        }
                       }
                     }
                   : null,
@@ -1812,8 +1844,8 @@ class PcConnection {
     _send({'v': 1, 'type': 'setBrightness', 'level': level.clamp(0, 100)});
   }
 
-  void shutdownPc() {
-    _send({'v': 1, 'type': 'shutdown'});
+  void shutdownPc({required String password}) {
+    _send({'v': 1, 'type': 'shutdown', 'password': password});
   }
 
   void _send(Map<String, dynamic> obj) {

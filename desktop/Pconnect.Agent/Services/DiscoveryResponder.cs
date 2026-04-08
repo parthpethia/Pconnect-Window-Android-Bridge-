@@ -54,6 +54,45 @@ internal sealed class DiscoveryResponder : IDisposable
         }
     }
 
+    public void Stop()
+    {
+        if (_task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _cts?.Cancel();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            _udp?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            _cts?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        _udp = null;
+        _cts = null;
+        _task = null;
+    }
+
     private async Task RunAsync(CancellationToken ct)
     {
         if (_udp is null)
@@ -105,16 +144,6 @@ internal sealed class DiscoveryResponder : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            _cts?.Cancel();
-        }
-        catch
-        {
-            // ignore
-        }
-
-        _udp?.Dispose();
-        _cts?.Dispose();
+        Stop();
     }
 }

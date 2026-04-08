@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Text;
+using Pconnect.Agent.Services;
 
 namespace Pconnect.Agent;
 
@@ -12,11 +13,16 @@ internal static class Program
         using var singleInstanceMutex = new Mutex(initiallyOwned: true, name: "Local\\Pconnect.Agent", createdNew: out var createdNew);
         if (!createdNew)
         {
-            MessageBox.Show(
-                "Pconnect Agent is already running. Check the tray (system notification area).",
-                "Pconnect",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            // Second launch: ask the already-running instance to show the dashboard.
+            // This lets users reopen the UI to start/stop the server.
+            if (!SingleInstanceIpc.TrySendShowDashboard())
+            {
+                MessageBox.Show(
+                    "Pconnect Agent is already running. Check the tray (system notification area).",
+                    "Pconnect",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
             Environment.ExitCode = 0;
             return;
         }

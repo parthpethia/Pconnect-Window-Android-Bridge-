@@ -9,6 +9,7 @@ internal sealed class PairedDevicesStore
     private readonly string _path;
 
     private Dictionary<string, string> _tokensByDeviceId = new(StringComparer.Ordinal);
+    private Dictionary<string, string> _namesByDeviceId = new(StringComparer.Ordinal);
 
     public PairedDevicesStore()
     {
@@ -24,12 +25,14 @@ internal sealed class PairedDevicesStore
             if (!File.Exists(_path))
             {
                 _tokensByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                _namesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
                 return;
             }
 
             var json = File.ReadAllText(_path);
             var data = JsonSerializer.Deserialize<PairedDevicesFile>(json);
             _tokensByDeviceId = data?.TokensByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            _namesByDeviceId = data?.NamesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
         }
     }
 
@@ -37,8 +40,20 @@ internal sealed class PairedDevicesStore
     {
         lock (_gate)
         {
-            var json = JsonSerializer.Serialize(new PairedDevicesFile(_tokensByDeviceId), new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(new PairedDevicesFile
+            {
+                TokensByDeviceId = _tokensByDeviceId,
+                NamesByDeviceId = _namesByDeviceId,
+            }, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_path, json);
+        }
+    }
+
+    public string? GetDeviceName(string deviceId)
+    {
+        lock (_gate)
+        {
+            return _namesByDeviceId.TryGetValue(deviceId, out var name) ? name : null;
         }
     }
 
@@ -57,12 +72,18 @@ internal sealed class PairedDevicesStore
         }
     }
 
-    public string PairNewDevice(string deviceId)
+    public string PairNewDevice(string deviceId, string? deviceName)
     {
         var token = GenerateToken();
         lock (_gate)
         {
             _tokensByDeviceId[deviceId] = token;
+
+            if (!string.IsNullOrWhiteSpace(deviceName))
+            {
+                _namesByDeviceId[deviceId] = deviceName.Trim();
+            }
+
             Save();
         }
 
@@ -75,5 +96,9 @@ internal sealed class PairedDevicesStore
         return Convert.ToHexString(bytes);
     }
 
-    private sealed record PairedDevicesFile(Dictionary<string, string> TokensByDeviceId);
+    private sealed class PairedDevicesFile
+    {
+        public Dictionary<string, string>? TokensByDeviceId { get; set; }
+        public Dictionary<string, string>? NamesByDeviceId { get; set; }
+    }
 }

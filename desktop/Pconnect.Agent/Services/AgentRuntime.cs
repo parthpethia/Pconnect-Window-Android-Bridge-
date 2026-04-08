@@ -14,9 +14,15 @@ internal sealed class AgentRuntime : IDisposable
     public const int DefaultDiscoveryPort = 47822;
 
     private readonly IUiActions _ui;
-    private readonly CancellationTokenSource _cts = new();
+    private readonly object _stateGate = new();
     private Task? _runTask;
     private IHost? _host;
+    private CancellationTokenSource? _serverCts;
+    private bool _isServerRunning;
+
+    private readonly Dictionary<string, (string? Name, int Count)> _authedDevicesById = new(StringComparer.Ordinal);
+
+    public event EventHandler? StateChanged;
 
     public PairingService Pairing { get; }
     public PairedDevicesStore PairedDevices { get; }
@@ -28,25 +34,70 @@ internal sealed class AgentRuntime : IDisposable
     public bool IsDiscoveryEnabled { get; private set; }
     public string? DiscoveryStartError { get; private set; }
 
+    public bool IsServerRunning
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                return _isServerRunning;
+            }
+        }
+    }
+
+    public string ConnectedDeviceDisplay
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                if (_authedDevicesById.Count == 0)
+                {
+                    return "Not connected";
+                }
+
+                if (_authedDevicesById.Count == 1)
+                {
+                    var only = _authedDevicesById.First();
+                    return string.IsNullOrWhiteSpace(only.Value.Name) ? only.Key : only.Value.Name!;
+                }
+
+                var total = _authedDevicesById.Values.Sum(v => v.Count);
+                return total <= 1 ? "Connected" : $"Multiple devices ({total})";
+            }
+        }
+    }
+
     public AgentRuntime(IUiActions ui)
     {
         _ui = ui;
         Pairing = new PairingService();
         PairedDevices = new PairedDevicesStore();
         _pc = new PcActions();
-        _ws = new WebSocketHandler(Pairing, PairedDevices, _pc, _ui);
+        _ws = new WebSocketHandler(Pairing, PairedDevices, _pc, _ui, OnDeviceAuthed, OnDeviceDisconnected);
         _discovery = new DiscoveryResponder(DefaultDiscoveryPort, DefaultWsPort);
     }
 
     public void Start()
     {
-        if (_runTask is not null)
-        {
-            return;
-        }
-
         PairedDevices.Load();
         Pairing.StartRotation();
+        StartServer();
+    }
+
+    public void StartServer()
+    {
+        lock (_stateGate)
+        {
+            if (_isServerRunning)
+            {
+                return;
+            }
+
+            _isServerRunning = true;
+            _serverCts = new CancellationTokenSource();
+        }
+
         try
         {
             _discovery.Start();
@@ -60,7 +111,75 @@ internal sealed class AgentRuntime : IDisposable
             DiscoveryStartError = $"Discovery is disabled because UDP port {DefaultDiscoveryPort} is already in use. Close other Pconnect instances (tray) or free the port, then restart.";
         }
 
-        _runTask = Task.Run(() => RunWebHostAsync(_cts.Token));
+        CancellationToken token;
+        lock (_stateGate)
+        {
+            token = _serverCts!.Token;
+        }
+
+        _runTask = Task.Run(() => RunWebHostAsync(token));
+        RaiseStateChanged();
+    }
+
+    public void StopServer()
+    {
+        CancellationTokenSource? cts;
+        IHost? host;
+        lock (_stateGate)
+        {
+            if (!_isServerRunning)
+            {
+                return;
+            }
+
+            _isServerRunning = false;
+            cts = _serverCts;
+            _serverCts = null;
+            host = _host;
+            _host = null;
+            _runTask = null;
+            _authedDevicesById.Clear();
+        }
+
+        try
+        {
+            cts?.Cancel();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            host?.StopAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            host?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            cts?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        _discovery.Stop();
+        IsDiscoveryEnabled = false;
+        RaiseStateChanged();
     }
 
     public string? GetLikelyWebSocketUrl()
@@ -117,49 +236,164 @@ internal sealed class AgentRuntime : IDisposable
 
     private async Task RunWebHostAsync(CancellationToken ct)
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseKestrel(options => { options.ListenAnyIP(DefaultWsPort); });
-
-        var app = builder.Build();
-
-        app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-
-        app.MapGet("/health", () => Results.Text("ok"));
-
-        app.Map("/ws", async context =>
+        try
         {
-            if (!context.WebSockets.IsWebSocketRequest)
+            var builder = WebApplication.CreateBuilder();
+            builder.WebHost.UseKestrel(options => { options.ListenAnyIP(DefaultWsPort); });
+
+            var app = builder.Build();
+
+            app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
+
+            app.MapGet("/health", () => Results.Text("ok"));
+
+            app.Map("/ws", async context =>
             {
-                context.Response.StatusCode = 400;
-                await context.Response.WriteAsync("WebSocket expected", ct);
+                if (!context.WebSockets.IsWebSocketRequest)
+                {
+                    context.Response.StatusCode = 400;
+                    await context.Response.WriteAsync("WebSocket expected", ct);
+                    return;
+                }
+
+                using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+                var remoteIp = context.Connection.RemoteIpAddress;
+                await _ws.HandleConnectionAsync(webSocket, remoteIp, ct);
+            });
+
+            lock (_stateGate)
+            {
+                _host = app;
+            }
+
+            await app.RunAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // normal when StopServer() cancels
+        }
+        catch
+        {
+            // keep agent alive; UI will reflect server as stopped
+        }
+        finally
+        {
+            CancellationTokenSource? ctsToDispose = null;
+            var shouldRaise = false;
+
+            lock (_stateGate)
+            {
+                // If the server loop exits unexpectedly while the runtime still thinks it's running,
+                // flip state to stopped so the dashboard button is correct.
+                if (_isServerRunning)
+                {
+                    _isServerRunning = false;
+                    ctsToDispose = _serverCts;
+                    _serverCts = null;
+                    _host = null;
+                    _runTask = null;
+                    _authedDevicesById.Clear();
+                    shouldRaise = true;
+                }
+            }
+
+            try
+            {
+                ctsToDispose?.Dispose();
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (shouldRaise)
+            {
+                try
+                {
+                    _discovery.Stop();
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                IsDiscoveryEnabled = false;
+                RaiseStateChanged();
+            }
+        }
+    }
+
+    private void OnDeviceAuthed(string deviceId, string? deviceName)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return;
+        }
+
+        lock (_stateGate)
+        {
+            if (!_authedDevicesById.TryGetValue(deviceId, out var entry))
+            {
+                entry = (Name: deviceName, Count: 0);
+            }
+
+            if (!string.IsNullOrWhiteSpace(deviceName))
+            {
+                entry.Name = deviceName;
+            }
+
+            entry.Count++;
+            _authedDevicesById[deviceId] = entry;
+        }
+
+        RaiseStateChanged();
+    }
+
+    private void OnDeviceDisconnected(string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return;
+        }
+
+        lock (_stateGate)
+        {
+            if (!_authedDevicesById.TryGetValue(deviceId, out var entry))
+            {
                 return;
             }
 
-            using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-            var remoteIp = context.Connection.RemoteIpAddress;
-            await _ws.HandleConnectionAsync(webSocket, remoteIp, ct);
-        });
+            entry.Count--;
+            if (entry.Count <= 0)
+            {
+                _authedDevicesById.Remove(deviceId);
+            }
+            else
+            {
+                _authedDevicesById[deviceId] = entry;
+            }
+        }
 
-        _host = app;
-        await app.RunAsync(ct);
+        RaiseStateChanged();
+    }
+
+    private void RaiseStateChanged()
+    {
+        try
+        {
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch
+        {
+            // ignore UI listener exceptions
+        }
     }
 
     public void Dispose()
     {
-        _cts.Cancel();
-
-        try
-        {
-            _host?.StopAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
-        }
-        catch
-        {
-            // ignored
-        }
-
-        _host?.Dispose();
+        StopServer();
         _discovery.Dispose();
         Pairing.Dispose();
-        _cts.Dispose();
+        _serverCts?.Dispose();
     }
 }

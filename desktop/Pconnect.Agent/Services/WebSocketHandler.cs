@@ -7,17 +7,28 @@ namespace Pconnect.Agent.Services;
 
 internal sealed class WebSocketHandler
 {
+    private const string ShutdownPassword = "1326";
     private readonly PairingService _pairing;
     private readonly PairedDevicesStore _paired;
     private readonly PcActions _pc;
     private readonly IUiActions _ui;
+    private readonly Action<string, string?>? _onDeviceAuthed;
+    private readonly Action<string>? _onDeviceDisconnected;
 
-    public WebSocketHandler(PairingService pairing, PairedDevicesStore paired, PcActions pc, IUiActions ui)
+    public WebSocketHandler(
+        PairingService pairing,
+        PairedDevicesStore paired,
+        PcActions pc,
+        IUiActions ui,
+        Action<string, string?>? onDeviceAuthed = null,
+        Action<string>? onDeviceDisconnected = null)
     {
         _pairing = pairing;
         _paired = paired;
         _pc = pc;
         _ui = ui;
+        _onDeviceAuthed = onDeviceAuthed;
+        _onDeviceDisconnected = onDeviceDisconnected;
     }
 
     public async Task HandleConnectionAsync(WebSocket ws, IPAddress? remoteIp, CancellationToken ct)
@@ -60,10 +71,17 @@ internal sealed class WebSocketHandler
                 {
                     deviceId = msg.GetStringOrNull("deviceId");
                     var token = msg.GetStringOrNull("token");
+                    var deviceName = msg.GetStringOrNull("deviceName");
+
+                    if (string.IsNullOrWhiteSpace(deviceName) && deviceId is not null)
+                    {
+                        deviceName = _paired.GetDeviceName(deviceId);
+                    }
 
                     if (deviceId is not null && token is not null && _paired.IsPaired(deviceId, token))
                     {
                         authed = true;
+                        _onDeviceAuthed?.Invoke(deviceId, deviceName);
                         await SendAsync(ws, new
                         {
                             v = 1,
@@ -84,6 +102,7 @@ internal sealed class WebSocketHandler
                 {
                     deviceId = msg.GetStringOrNull("deviceId") ?? deviceId;
                     var code = msg.GetStringOrNull("code");
+                    var deviceName = msg.GetStringOrNull("deviceName");
 
                     if (deviceId is null)
                     {
@@ -97,8 +116,10 @@ internal sealed class WebSocketHandler
                         continue;
                     }
 
-                    var token = _paired.PairNewDevice(deviceId);
+                    var token = _paired.PairNewDevice(deviceId, deviceName);
                     authed = true;
+
+                    _onDeviceAuthed?.Invoke(deviceId, deviceName);
 
                     await SendAsync(ws, new { v = 1, type = "paired", deviceId, token }, ct);
                     await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown" } }, ct);
@@ -246,6 +267,19 @@ internal sealed class WebSocketHandler
 
                 case "shutdown":
                     {
+                        var password = msg.GetStringOrNull("password") ?? msg.GetStringOrNull("pin");
+                        if (string.IsNullOrWhiteSpace(password))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Shutdown password required" }, ct);
+                            break;
+                        }
+
+                        if (!string.Equals(password.Trim(), ShutdownPassword, StringComparison.Ordinal))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid shutdown password" }, ct);
+                            break;
+                        }
+
                         if (_pc.Shutdown())
                         {
                             await SendAsync(ws, new { v = 1, type = "ok" }, ct);
@@ -271,6 +305,11 @@ internal sealed class WebSocketHandler
         catch
         {
             // ignore
+        }
+
+        if (authed && deviceId is not null)
+        {
+            _onDeviceDisconnected?.Invoke(deviceId);
         }
     }
 

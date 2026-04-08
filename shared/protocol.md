@@ -161,8 +161,10 @@ Client → PC
 Client → PC
 
 ```json
-{ "v": 1, "type": "shutdown" }
+{ "v": 1, "type": "shutdown", "password": "1326" }
 ```
+
+- `password`: required (configured on PC; currently `1326`)
 
 PC → Client
 
