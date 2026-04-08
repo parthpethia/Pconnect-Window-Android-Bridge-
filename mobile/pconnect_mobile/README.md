@@ -21,3 +21,13 @@ flutter run
 
 - Discovery uses UDP broadcast on port `47822`.
 - Control uses WebSocket on port `47821` (`/ws`).
+
+## Troubleshooting (Gradle daemon disappeared / hs_err_pid\*.log)
+
+If `flutter build apk --release` fails with **"Gradle build daemon disappeared unexpectedly"** and points to an `hs_err_pid*.log`, the Gradle JVM ran out of **native/commit** memory.
+
+Try:
+
+- Close memory-heavy apps (Android Studio, Chrome tabs, emulators) and retry.
+- Ensure Windows has a pagefile enabled (system-managed is fine).
+- This repo already reduces Gradle memory usage in `android/gradle.properties`; if you still hit it, lower `org.gradle.jvmargs` further (smaller `-Xmx`) or reduce `org.gradle.workers.max`.

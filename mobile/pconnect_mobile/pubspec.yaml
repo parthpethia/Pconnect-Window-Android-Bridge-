@@ -13,6 +13,10 @@ dependencies:
   web_socket_channel: ^2.4.0
   shared_preferences: ^2.2.2
   uuid: ^4.4.0
+  connectivity_plus: ^6.0.5
+  network_info_plus: ^6.0.2
+  permission_handler: ^11.3.1
+  android_intent_plus: ^5.2.0
 
 dev_dependencies:
   flutter_test:

@@ -47,9 +47,16 @@ internal sealed class WebSocketHandler
                 continue;
             }
 
+            // Be lenient: clients may vary casing or accidentally include whitespace.
+            // The protocol still documents canonical casing, but accepting variants
+            // prevents confusing "Unknown type" errors.
+            var typeRaw = type;
+            type = type.Trim();
+            var typeKey = type.ToLowerInvariant();
+
             if (!authed)
             {
-                if (type == "hello")
+                if (typeKey == "hello")
                 {
                     deviceId = msg.GetStringOrNull("deviceId");
                     var token = msg.GetStringOrNull("token");
@@ -62,7 +69,7 @@ internal sealed class WebSocketHandler
                             v = 1,
                             type = "helloAck",
                             pcName = Environment.MachineName,
-                            capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard" }
+                            capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown" }
                         }, ct);
                     }
                     else
@@ -73,7 +80,7 @@ internal sealed class WebSocketHandler
                     continue;
                 }
 
-                if (type == "pair")
+                if (typeKey == "pair")
                 {
                     deviceId = msg.GetStringOrNull("deviceId") ?? deviceId;
                     var code = msg.GetStringOrNull("code");
@@ -94,7 +101,7 @@ internal sealed class WebSocketHandler
                     authed = true;
 
                     await SendAsync(ws, new { v = 1, type = "paired", deviceId, token }, ct);
-                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard" } }, ct);
+                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown" } }, ct);
                     continue;
                 }
 
@@ -102,7 +109,7 @@ internal sealed class WebSocketHandler
                 continue;
             }
 
-            switch (type)
+            switch (typeKey)
             {
                 case "lock":
                     if (_pc.Lock())
@@ -116,89 +123,143 @@ internal sealed class WebSocketHandler
                     break;
 
                 case "input":
-                {
-                    var backspaces = msg.GetIntOrDefault("backspaces", 0);
-                    var text = msg.GetStringOrNull("text") ?? string.Empty;
-                    _pc.TypeText(backspaces, text);
-                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
-                    break;
-                }
-
-                case "launch":
-                {
-                    var command = msg.GetStringOrNull("command");
-                    var args = msg.GetStringArrayOrNull("args");
-                    if (string.IsNullOrWhiteSpace(command))
                     {
-                        await SendAsync(ws, new { v = 1, type = "error", message = "Missing command" }, ct);
+                        var backspaces = msg.GetIntOrDefault("backspaces", 0);
+                        var text = msg.GetStringOrNull("text") ?? string.Empty;
+                        _pc.TypeText(backspaces, text);
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
                         break;
                     }
 
-                    _pc.Launch(command!, args);
-                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
-                    break;
-                }
+                case "launch":
+                    {
+                        var command = msg.GetStringOrNull("command");
+                        var args = msg.GetStringArrayOrNull("args");
+                        if (string.IsNullOrWhiteSpace(command))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Missing command" }, ct);
+                            break;
+                        }
+
+                        _pc.Launch(command!, args);
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        break;
+                    }
 
                 case "show":
                     _ui.ShowAgentUi();
                     await SendAsync(ws, new { v = 1, type = "ok" }, ct);
                     break;
 
-                case "mouseMove":
-                {
-                    var dx = msg.GetIntOrDefault("dx", 0);
-                    var dy = msg.GetIntOrDefault("dy", 0);
-                    _pc.MouseMove(dx, dy);
-                    break;
-                }
-
-                case "mouseScroll":
-                {
-                    var dy = msg.GetIntOrDefault("dy", 0);
-                    _pc.MouseScroll(dy);
-                    break;
-                }
-
-                case "mouseButton":
-                {
-                    var button = msg.GetStringOrNull("button") ?? string.Empty;
-                    var action = msg.GetStringOrNull("action") ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(button) || string.IsNullOrWhiteSpace(action))
+                case "mousemove":
                     {
-                        await SendAsync(ws, new { v = 1, type = "error", message = "Missing button/action" }, ct);
+                        var dx = msg.GetIntOrDefault("dx", 0);
+                        var dy = msg.GetIntOrDefault("dy", 0);
+                        _pc.MouseMove(dx, dy);
                         break;
                     }
 
-                    _pc.MouseButton(button, action);
-                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
-                    break;
-                }
+                case "mousescroll":
+                    {
+                        var dy = msg.GetIntOrDefault("dy", 0);
+                        _pc.MouseScroll(dy);
+                        break;
+                    }
+
+                case "mousebutton":
+                    {
+                        var button = msg.GetStringOrNull("button") ?? string.Empty;
+                        var action = msg.GetStringOrNull("action") ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(button) || string.IsNullOrWhiteSpace(action))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Missing button/action" }, ct);
+                            break;
+                        }
+
+                        _pc.MouseButton(button, action);
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        break;
+                    }
 
                 case "key":
-                {
-                    var vk = msg.GetIntOrDefault("vk", 0);
-                    var action = msg.GetStringOrNull("action") ?? string.Empty;
-                    var extended = msg.GetBoolOrDefault("extended", false);
-
-                    if (vk <= 0 || vk > 0xFF)
                     {
-                        await SendAsync(ws, new { v = 1, type = "error", message = "Invalid vk" }, ct);
+                        var vk = msg.GetIntOrDefault("vk", 0);
+                        var action = msg.GetStringOrNull("action") ?? string.Empty;
+                        var extended = msg.GetBoolOrDefault("extended", false);
+
+                        if (vk <= 0 || vk > 0xFF)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid vk" }, ct);
+                            break;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(action))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Missing action" }, ct);
+                            break;
+                        }
+
+                        _pc.Key((ushort)vk, action, extended);
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
                         break;
                     }
 
-                    if (string.IsNullOrWhiteSpace(action))
+                case "setvolume":
                     {
-                        await SendAsync(ws, new { v = 1, type = "error", message = "Missing action" }, ct);
+                        var level = msg.GetIntOrDefault("level", -1);
+                        if (level < 0 || level > 100)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid level" }, ct);
+                            break;
+                        }
+
+                        if (_pc.SetVolume(level))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        }
+                        else
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Volume set failed" }, ct);
+                        }
                         break;
                     }
 
-                    _pc.Key((ushort)vk, action, extended);
-                    await SendAsync(ws, new { v = 1, type = "ok" }, ct);
-                    break;
-                }
+                case "setbrightness":
+                    {
+                        var level = msg.GetIntOrDefault("level", -1);
+                        if (level < 0 || level > 100)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid level" }, ct);
+                            break;
+                        }
+
+                        if (_pc.SetBrightness(level))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        }
+                        else
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Brightness set failed" }, ct);
+                        }
+                        break;
+                    }
+
+                case "shutdown":
+                    {
+                        if (_pc.Shutdown())
+                        {
+                            await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        }
+                        else
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Shutdown failed" }, ct);
+                        }
+
+                        break;
+                    }
 
                 default:
-                    await SendAsync(ws, new { v = 1, type = "error", message = $"Unknown type: {type}" }, ct);
+                    await SendAsync(ws, new { v = 1, type = "error", message = $"Unknown type: {typeRaw}" }, ct);
                     break;
             }
         }

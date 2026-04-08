@@ -164,4 +164,34 @@ internal sealed class PcActions
                 break;
         }
     }
+
+    public bool SetVolume(int level)
+    {
+        return SystemVolume.TrySetPercent(level);
+    }
+
+    public bool SetBrightness(int level)
+    {
+        return SystemBrightness.TrySetPercent(level);
+    }
+
+    public bool Shutdown()
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = "shutdown.exe",
+                Arguments = "/s /t 0",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+
+            return p is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }

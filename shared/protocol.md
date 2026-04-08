@@ -108,6 +108,38 @@ Client → PC
 - `action`: `press` | `down` | `up`
 - Optional: `extended`: boolean (for extended keys like arrows)
 
+### Set system volume
+
+Client → PC
+
+```json
+{ "v": 1, "type": "setVolume", "level": 35 }
+```
+
+- `level`: integer `0..100`
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+### Set screen brightness
+
+Client → PC
+
+```json
+{ "v": 1, "type": "setBrightness", "level": 60 }
+```
+
+- `level`: integer `0..100`
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
 ### Launch an application
 
 Client → PC
@@ -122,6 +154,20 @@ Client → PC
 
 ```json
 { "v": 1, "type": "show" }
+```
+
+### Shut down PC
+
+Client → PC
+
+```json
+{ "v": 1, "type": "shutdown" }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
 ```
 
 ### Mouse / Trackpad control

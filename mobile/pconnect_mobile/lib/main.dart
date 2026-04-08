@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:network_info_plus/network_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -19,15 +24,109 @@ Future<void> main() async {
   runApp(const PconnectApp());
 }
 
-class PconnectApp extends StatelessWidget {
-  const PconnectApp({super.key});
+class AppThemeController extends ValueNotifier<ThemeMode> {
+  static const String _prefsKey = 'theme_mode';
+
+  AppThemeController() : super(ThemeMode.light);
+
+  Future<void> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_prefsKey);
+    value = switch (raw) {
+      'dark' => ThemeMode.dark,
+      'light' => ThemeMode.light,
+      _ => ThemeMode.light,
+    };
+  }
+
+  Future<void> toggle() async {
+    value = value == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        _prefsKey, value == ThemeMode.dark ? 'dark' : 'light');
+  }
+}
+
+class ThemeControllerScope extends InheritedWidget {
+  final AppThemeController controller;
+
+  const ThemeControllerScope({
+    super.key,
+    required this.controller,
+    required super.child,
+  });
+
+  static AppThemeController of(BuildContext context) {
+    final scope =
+        context.dependOnInheritedWidgetOfExactType<ThemeControllerScope>();
+    assert(scope != null, 'ThemeControllerScope not found in widget tree');
+    return scope!.controller;
+  }
+
+  @override
+  bool updateShouldNotify(ThemeControllerScope oldWidget) =>
+      controller != oldWidget.controller;
+}
+
+class ThemeToggleButton extends StatelessWidget {
+  const ThemeToggleButton({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Pconnect',
-      theme: ThemeData(useMaterial3: true),
-      home: const HomeScreen(),
+    final controller = ThemeControllerScope.of(context);
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: controller,
+      builder: (context, mode, _) {
+        final isDark = mode == ThemeMode.dark;
+        return IconButton(
+          tooltip: isDark ? 'Light mode' : 'Dark mode',
+          icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+          onPressed: () => unawaited(controller.toggle()),
+        );
+      },
+    );
+  }
+}
+
+class PconnectApp extends StatefulWidget {
+  const PconnectApp({super.key});
+
+  @override
+  State<PconnectApp> createState() => _PconnectAppState();
+}
+
+class _PconnectAppState extends State<PconnectApp> {
+  final AppThemeController _themeController = AppThemeController();
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_themeController.load());
+  }
+
+  @override
+  void dispose() {
+    _themeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: _themeController,
+      builder: (context, themeMode, _) {
+        return ThemeControllerScope(
+          controller: _themeController,
+          child: MaterialApp(
+            title: 'Pconnect',
+            theme: ThemeData(useMaterial3: true, brightness: Brightness.light),
+            darkTheme:
+                ThemeData(useMaterial3: true, brightness: Brightness.dark),
+            themeMode: themeMode,
+            home: const HomeScreen(),
+          ),
+        );
+      },
     );
   }
 }
@@ -223,9 +322,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-          title: Text(_status.pcName == null
-              ? 'Pconnect'
-              : 'Pconnect • ${_status.pcName}')),
+        title: Text(_status.pcName == null
+            ? 'Pconnect'
+            : 'Pconnect • ${_status.pcName}'),
+        actions: const [ThemeToggleButton()],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
@@ -302,9 +403,72 @@ class _HomeScreenState extends State<HomeScreen> {
               FilledButton(onPressed: _pair, child: const Text('Pair')),
               const Divider(),
             ],
+            FilledButton.tonal(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ConnectivityScreen()),
+                );
+              },
+              child: const Text('Wi‑Fi / Bluetooth'),
+            ),
+            const SizedBox(height: 12),
             FilledButton(
               onPressed: connected ? () => _conn?.lockPc() : null,
               child: const Text('Lock PC'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: connected
+                  ? () async {
+                      final conn = _conn;
+                      if (conn == null) return;
+
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (context) {
+                          return AlertDialog(
+                            title: const Text('Shut down PC?'),
+                            content: const Text(
+                                'Are you sure you want to shut down this PC?'),
+                            actions: [
+                              TextButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(false),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(true),
+                                child: const Text('Shut down'),
+                              ),
+                            ],
+                          );
+                        },
+                      );
+
+                      if (confirmed == true) {
+                        conn.shutdownPc();
+                      }
+                    }
+                  : null,
+              child: const Text('Shut down PC'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: connected
+                  ? () {
+                      final conn = _conn;
+                      if (conn == null) return;
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => VolumeBrightnessScreen(
+                          conn: conn,
+                          pcName: _status.pcName,
+                          enabled: connected,
+                        ),
+                      ));
+                    }
+                  : null,
+              child: const Text('Volume / Brightness'),
             ),
             const SizedBox(height: 12),
             TextField(
@@ -398,7 +562,9 @@ class KeyboardScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: Text(pcName == null ? 'Keyboard' : 'Keyboard • $pcName')),
+        title: Text(pcName == null ? 'Keyboard' : 'Keyboard • $pcName'),
+        actions: const [ThemeToggleButton()],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: ValueListenableBuilder<ConnectionStatus>(
@@ -426,6 +592,473 @@ class KeyboardScreen extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+}
+
+class ConnectivityScreen extends StatefulWidget {
+  const ConnectivityScreen({super.key});
+
+  @override
+  State<ConnectivityScreen> createState() => _ConnectivityScreenState();
+}
+
+class _ConnectivityScreenState extends State<ConnectivityScreen> {
+  static const MethodChannel _channel = MethodChannel('pconnect/connectivity');
+
+  final Connectivity _connectivity = Connectivity();
+  final NetworkInfo _networkInfo = NetworkInfo();
+
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
+
+  List<ConnectivityResult> _results = const [];
+  String? _wifiName;
+  String? _wifiIp;
+  String? _wifiError;
+
+  bool? _bluetoothEnabled;
+  List<Map<String, String>> _bluetoothBonded = const [];
+  List<Map<String, String>> _bluetoothConnected = const [];
+  String? _bluetoothError;
+
+  @override
+  void initState() {
+    super.initState();
+    _connSub = _connectivity.onConnectivityChanged.listen((results) {
+      setState(() => _results = results);
+      unawaited(_refreshWifiInfo());
+    });
+    unawaited(_refreshAll());
+  }
+
+  @override
+  void dispose() {
+    _connSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshAll() async {
+    await _refreshConnectivity();
+    await _refreshWifiInfo();
+    await _refreshBluetoothInfo();
+  }
+
+  Future<void> _refreshConnectivity() async {
+    try {
+      final results = await _connectivity.checkConnectivity();
+      if (!mounted) return;
+      setState(() => _results = results);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  Future<void> _refreshWifiInfo() async {
+    if (!mounted) return;
+
+    if (!_results.contains(ConnectivityResult.wifi)) {
+      setState(() {
+        _wifiName = null;
+        _wifiIp = null;
+        _wifiError = null;
+      });
+      return;
+    }
+
+    // SSID access is permission-gated on Android.
+    if (Platform.isAndroid) {
+      final statuses = await <Permission>[
+        Permission.locationWhenInUse,
+        Permission.nearbyWifiDevices,
+      ].request();
+
+      final anyGranted = statuses.values.any((s) => s.isGranted);
+      if (!anyGranted) {
+        setState(() {
+          _wifiName = null;
+          _wifiIp = null;
+          _wifiError = 'Permission denied (needed to read Wi‑Fi name).';
+        });
+        return;
+      }
+    }
+
+    try {
+      var name = await _networkInfo.getWifiName();
+      final ip = await _networkInfo.getWifiIP();
+      name = _stripQuotes(name);
+      if (!mounted) return;
+      setState(() {
+        _wifiName = name;
+        _wifiIp = ip;
+        _wifiError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _wifiName = null;
+        _wifiIp = null;
+        _wifiError = 'Wi‑Fi info unavailable: $e';
+      });
+    }
+  }
+
+  Future<void> _refreshBluetoothInfo() async {
+    if (!Platform.isAndroid) {
+      setState(() {
+        _bluetoothEnabled = null;
+        _bluetoothBonded = const [];
+        _bluetoothConnected = const [];
+        _bluetoothError = 'Bluetooth info is only implemented on Android.';
+      });
+      return;
+    }
+
+    final statuses = await <Permission>[
+      Permission.bluetoothConnect,
+    ].request();
+    if (!statuses.values.any((s) => s.isGranted)) {
+      setState(() {
+        _bluetoothEnabled = null;
+        _bluetoothBonded = const [];
+        _bluetoothConnected = const [];
+        _bluetoothError =
+            'Permission denied (needed to read Bluetooth status).';
+      });
+      return;
+    }
+
+    try {
+      final res = await _channel.invokeMethod<Map>('getBluetoothInfo');
+      final map = (res ?? <dynamic, dynamic>{}).cast<dynamic, dynamic>();
+
+      bool? enabled;
+      if (map['enabled'] is bool) enabled = map['enabled'] as bool;
+
+      List<Map<String, String>> parseDeviceList(dynamic v) {
+        if (v is! List) return const [];
+        return v
+            .whereType<Map>()
+            .map((e) => e.cast<dynamic, dynamic>())
+            .map((e) => {
+                  'name': (e['name'] as String?) ?? '',
+                  'address': (e['address'] as String?) ?? '',
+                })
+            .toList(growable: false);
+      }
+
+      final bonded = parseDeviceList(map['bonded']);
+      final connected = parseDeviceList(map['connected']);
+
+      if (!mounted) return;
+      setState(() {
+        _bluetoothEnabled = enabled;
+        _bluetoothBonded = bonded;
+        _bluetoothConnected = connected;
+        _bluetoothError = null;
+      });
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _bluetoothEnabled = null;
+        _bluetoothBonded = const [];
+        _bluetoothConnected = const [];
+        _bluetoothError = e.message ?? e.toString();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _bluetoothEnabled = null;
+        _bluetoothBonded = const [];
+        _bluetoothConnected = const [];
+        _bluetoothError = e.toString();
+      });
+    }
+  }
+
+  void _openWifiPanel() {
+    if (!Platform.isAndroid) return;
+    unawaited(const AndroidIntent(action: 'android.settings.panel.action.WIFI')
+        .launch());
+  }
+
+  void _openBluetoothPanel() {
+    if (!Platform.isAndroid) return;
+    unawaited(
+        const AndroidIntent(action: 'android.settings.panel.action.BLUETOOTH')
+            .launch());
+  }
+
+  static String? _stripQuotes(String? s) {
+    if (s == null) return null;
+    final t = s.trim();
+    if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+      return t.substring(1, t.length - 1);
+    }
+    return t;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final wifiConnected = _results.contains(ConnectivityResult.wifi);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Wi‑Fi / Bluetooth'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: () => unawaited(_refreshAll()),
+            icon: const Icon(Icons.refresh),
+          ),
+          const ThemeToggleButton(),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text('Wi‑Fi', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text(wifiConnected ? 'Connected' : 'Not connected'),
+          if (_wifiName != null) Text('Network: ${_wifiName!}'),
+          if (_wifiIp != null) Text('Phone IP: ${_wifiIp!}'),
+          if (_wifiError != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _wifiError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+          const SizedBox(height: 8),
+          FilledButton.tonal(
+            onPressed: Platform.isAndroid ? _openWifiPanel : null,
+            child: const Text('Open Wi‑Fi panel'),
+          ),
+          const SizedBox(height: 24),
+          Text('Bluetooth', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          if (_bluetoothEnabled != null)
+            Text(_bluetoothEnabled! ? 'Enabled' : 'Disabled')
+          else
+            const Text('Unknown'),
+          if (_bluetoothConnected.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text('Connected devices:',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            for (final d in _bluetoothConnected)
+              Text(
+                  '${d['name']!.isEmpty ? '(unnamed)' : d['name']} • ${d['address']}'),
+          ],
+          if (_bluetoothBonded.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text('Paired devices:',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            for (final d in _bluetoothBonded.take(8))
+              Text(
+                  '${d['name']!.isEmpty ? '(unnamed)' : d['name']} • ${d['address']}'),
+            if (_bluetoothBonded.length > 8)
+              Text('+${_bluetoothBonded.length - 8} more'),
+          ],
+          if (_bluetoothError != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _bluetoothError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ],
+          const SizedBox(height: 8),
+          FilledButton.tonal(
+            onPressed: Platform.isAndroid ? _openBluetoothPanel : null,
+            child: const Text('Open Bluetooth panel'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class VolumeBrightnessScreen extends StatefulWidget {
+  final PcConnection conn;
+  final String? pcName;
+  final bool enabled;
+
+  const VolumeBrightnessScreen({
+    super.key,
+    required this.conn,
+    required this.pcName,
+    required this.enabled,
+  });
+
+  @override
+  State<VolumeBrightnessScreen> createState() => _VolumeBrightnessScreenState();
+}
+
+class _VolumeBrightnessScreenState extends State<VolumeBrightnessScreen> {
+  static const _prefsVolumeKey = 'last_volume_level';
+  static const _prefsBrightnessKey = 'last_brightness_level';
+
+  double _volume = 50;
+  double _brightness = 50;
+  Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadLast());
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadLast() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getInt(_prefsVolumeKey);
+    final b = prefs.getInt(_prefsBrightnessKey);
+    if (!mounted) return;
+    setState(() {
+      _volume = (v ?? 50).clamp(0, 100).toDouble();
+      _brightness = (b ?? 50).clamp(0, 100).toDouble();
+    });
+  }
+
+  void _sendDebounced({int? volume, int? brightness}) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 80), () async {
+      if (!widget.enabled || !widget.conn.currentStatus.connected) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      if (volume != null) {
+        widget.conn.setVolume(level: volume);
+        await prefs.setInt(_prefsVolumeKey, volume);
+      }
+      if (brightness != null) {
+        widget.conn.setBrightness(level: brightness);
+        await prefs.setInt(_prefsBrightnessKey, brightness);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.pcName == null
+        ? 'Volume / Brightness'
+        : 'Volume / Brightness • ${widget.pcName}';
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        actions: const [ThemeToggleButton()],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ValueListenableBuilder<ConnectionStatus>(
+          valueListenable: widget.conn.statusNotifier,
+          builder: (context, status, _) {
+            final connected = status.connected;
+            final enabled = widget.enabled && connected;
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (status.error != null) ...[
+                  Text(
+                    status.error!,
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                Expanded(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _VerticalPercentSlider(
+                          label: 'Volume',
+                          value: _volume,
+                          enabled: enabled,
+                          onChanged: (v) {
+                            setState(() => _volume = v);
+                            _sendDebounced(volume: v.round());
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 24),
+                      Expanded(
+                        child: _VerticalPercentSlider(
+                          label: 'Brightness',
+                          value: _brightness,
+                          enabled: enabled,
+                          onChanged: (v) {
+                            setState(() => _brightness = v);
+                            _sendDebounced(brightness: v.round());
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  enabled ? 'Tip: drag the bars to adjust.' : 'Not connected.',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _VerticalPercentSlider extends StatelessWidget {
+  final String label;
+  final double value;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  const _VerticalPercentSlider({
+    required this.label,
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final slider = Slider(
+      value: value,
+      min: 0,
+      max: 100,
+      divisions: 100,
+      label: '${value.round()}%',
+      onChanged: enabled ? onChanged : null,
+    );
+
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Expanded(
+          child: Center(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 10,
+              ),
+              child: RotatedBox(
+                quarterTurns: -1,
+                child: slider,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text('${value.round()}%'),
+      ],
     );
   }
 }
@@ -691,7 +1324,9 @@ class TrackpadScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: Text(pcName == null ? 'Trackpad' : 'Trackpad • $pcName')),
+        title: Text(pcName == null ? 'Trackpad' : 'Trackpad • $pcName'),
+        actions: const [ThemeToggleButton()],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ValueListenableBuilder<ConnectionStatus>(
@@ -1167,6 +1802,18 @@ class PcConnection {
       'action': 'up',
       if (extended) 'extended': true,
     });
+  }
+
+  void setVolume({required int level}) {
+    _send({'v': 1, 'type': 'setVolume', 'level': level.clamp(0, 100)});
+  }
+
+  void setBrightness({required int level}) {
+    _send({'v': 1, 'type': 'setBrightness', 'level': level.clamp(0, 100)});
+  }
+
+  void shutdownPc() {
+    _send({'v': 1, 'type': 'shutdown'});
   }
 
   void _send(Map<String, dynamic> obj) {

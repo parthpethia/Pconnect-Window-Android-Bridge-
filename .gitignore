@@ -13,6 +13,10 @@
 **/.packages
 **/build/
 
+# Gradle caches (keep out of repo; can exceed Windows path limits)
+.gradle-user-home/
+**/.gradle/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -20,3 +24,7 @@ Thumbs.db
 # Secrets / local state
 **/paired-devices.json
 **/appsettings.local.json
+
+# Crash logs
+hs_err_pid*.log
+replay_pid*.log
