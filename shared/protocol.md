@@ -172,6 +172,36 @@ PC → Client
 { "v": 1, "type": "ok" }
 ```
 
+### Clipboard sync
+
+#### Set clipboard (from phone to PC)
+
+Client → PC
+
+```json
+{ "v": 1, "type": "clipboardSet", "data": "<base64-encoded-utf8>", "format": "text/plain" }
+```
+
+- `data`: Base64-encoded text content
+- `format`: MIME type (currently `text/plain`)
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+#### Clipboard update (from PC to phone, unsolicited)
+
+PC → Client (pushed when system clipboard changes on PC)
+
+```json
+{ "v": 1, "type": "clipboardUpdate", "data": "<base64-encoded-utf8>", "format": "text/plain", "source": "system" }
+```
+
+- Phone receives this when user copies on PC
+- `source`: always `"system"` (for future extension to other sources)
+
 ### Mouse / Trackpad control
 
 These messages are designed to be sent frequently (especially `mouseMove`).

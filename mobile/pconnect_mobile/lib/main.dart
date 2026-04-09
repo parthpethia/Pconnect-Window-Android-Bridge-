@@ -16,9 +16,6 @@ const int kWsPortDefault = 47821;
 const int kDiscoveryPort = 47822;
 const String kDiscoverProbe = 'PCONNECT_DISCOVER_V1';
 
-const String kVsCodeExePath =
-    r'C:\Users\Atul\AppData\Local\Programs\Microsoft VS Code\Code.exe';
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const PconnectApp());
@@ -534,8 +531,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 12),
             FilledButton(
-              onPressed:
-                  connected ? () => _conn?.launchApp(kVsCodeExePath) : null,
+              onPressed: connected ? () => _conn?.launchApp('code') : null,
               child: const Text('VS Code'),
             ),
             const SizedBox(height: 12),
@@ -571,6 +567,22 @@ class _HomeScreenState extends State<HomeScreen> {
                     }
                   : null,
               child: const Text('Keyboard'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: connected
+                  ? () {
+                      final conn = _conn;
+                      if (conn == null) return;
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => ClipboardSyncScreen(
+                          conn: conn,
+                          pcName: _status.pcName,
+                        ),
+                      ));
+                    }
+                  : null,
+              child: const Text('Clipboard Sync'),
             ),
           ],
         ),
@@ -1637,6 +1649,68 @@ class DiscoveryClient {
   }
 }
 
+class ClipboardSyncScreen extends StatelessWidget {
+  final PcConnection conn;
+  final String? pcName;
+
+  const ClipboardSyncScreen({
+    required this.conn,
+    required this.pcName,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(pcName ?? 'Clipboard Sync'),
+      ),
+      body: ValueListenableBuilder<ConnectionStatus>(
+        valueListenable: conn.statusNotifier,
+        builder: (context, status, _) {
+          if (!status.connected) {
+            return const Center(
+              child: Text('Not connected to PC'),
+            );
+          }
+
+          return ValueListenableBuilder<List<String>>(
+            valueListenable: conn.clipboardHistoryNotifier,
+            builder: (context, history, _) {
+              return history.isEmpty
+                  ? const Center(
+                      child: Text('No clipboard sync yet'),
+                    )
+                  : ListView.builder(
+                      itemCount: history.length,
+                      itemBuilder: (context, index) {
+                        final text = history[index];
+                        return ListTile(
+                          title: Text(
+                            text.length > 100 ? '${text.substring(0, 100)}...' : text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.copy),
+                            onPressed: () {
+                              conn.setClipboard(text: text);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Copied to PC clipboard')),
+                              );
+                            },
+                          ),
+                        );
+                      },
+                    );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
 class PcConnection {
   final String deviceId;
 
@@ -1647,12 +1721,16 @@ class PcConnection {
       ValueNotifier(ConnectionStatus.disconnected);
   ConnectionStatus get currentStatus => statusNotifier.value;
 
+  final ValueNotifier<List<String>> clipboardHistoryNotifier =
+      ValueNotifier([]);
+
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
 
   String? _host;
   int? _port;
   String? _token;
+  String? _lastClipboardContent;
 
   Timer? _reconnectTimer;
   int _reconnectDelayMs = 500;
@@ -1735,6 +1813,25 @@ class PcConnection {
         final token = obj['token'] as String?;
         if (token != null) {
           _token = token;
+        }
+        return;
+      }
+
+      if (type == 'clipboardUpdate') {
+        try {
+          final data = obj['data'] as String?;
+          if (data != null && data.isNotEmpty) {
+            final bytes = base64Decode(data);
+            final text = utf8.decode(bytes);
+            _lastClipboardContent = text;
+            final history = clipboardHistoryNotifier.value;
+            if (!history.contains(text)) {
+              final newHistory = [text, ...history.take(9)];
+              clipboardHistoryNotifier.value = newHistory;
+            }
+          }
+        } catch (_) {
+          // ignore
         }
         return;
       }
@@ -1846,6 +1943,21 @@ class PcConnection {
 
   void shutdownPc({required String password}) {
     _send({'v': 1, 'type': 'shutdown', 'password': password});
+  }
+
+  void setClipboard({required String text}) {
+    if (text == _lastClipboardContent) return;
+    _lastClipboardContent = text;
+
+    final bytes = utf8.encode(text);
+    final encoded = base64Encode(bytes);
+
+    _send({
+      'v': 1,
+      'type': 'clipboardSet',
+      'data': encoded,
+      'format': 'text/plain',
+    });
   }
 
   void _send(Map<String, dynamic> obj) {

@@ -7,7 +7,7 @@ namespace Pconnect.Agent.Services;
 
 internal sealed class WebSocketHandler
 {
-    private const string ShutdownPassword = "1326";
+    private readonly string _shutdownPassword;
     private readonly PairingService _pairing;
     private readonly PairedDevicesStore _paired;
     private readonly PcActions _pc;
@@ -29,6 +29,7 @@ internal sealed class WebSocketHandler
         _ui = ui;
         _onDeviceAuthed = onDeviceAuthed;
         _onDeviceDisconnected = onDeviceDisconnected;
+        _shutdownPassword = Environment.GetEnvironmentVariable("PCONNECT_SHUTDOWN_PIN") ?? "1326";
     }
 
     public async Task HandleConnectionAsync(WebSocket ws, IPAddress? remoteIp, CancellationToken ct)
@@ -87,7 +88,7 @@ internal sealed class WebSocketHandler
                             v = 1,
                             type = "helloAck",
                             pcName = Environment.MachineName,
-                            capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown" }
+                            capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown", "clipboard", "fileTransfer", "recentFiles" }
                         }, ct);
                     }
                     else
@@ -122,7 +123,7 @@ internal sealed class WebSocketHandler
                     _onDeviceAuthed?.Invoke(deviceId, deviceName);
 
                     await SendAsync(ws, new { v = 1, type = "paired", deviceId, token }, ct);
-                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown" } }, ct);
+                    await SendAsync(ws, new { v = 1, type = "helloAck", pcName = Environment.MachineName, capabilities = new[] { "lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown", "clipboard", "fileTransfer", "recentFiles" } }, ct);
                     continue;
                 }
 
@@ -274,7 +275,7 @@ internal sealed class WebSocketHandler
                             break;
                         }
 
-                        if (!string.Equals(password.Trim(), ShutdownPassword, StringComparison.Ordinal))
+                        if (!string.Equals(password.Trim(), _shutdownPassword, StringComparison.Ordinal))
                         {
                             await SendAsync(ws, new { v = 1, type = "error", message = "Invalid shutdown password" }, ct);
                             break;
@@ -287,6 +288,31 @@ internal sealed class WebSocketHandler
                         else
                         {
                             await SendAsync(ws, new { v = 1, type = "error", message = "Shutdown failed" }, ct);
+                        }
+
+                        break;
+                    }
+
+                case "clipboardset":
+                    {
+                        var data = msg.GetStringOrNull("data");
+                        if (string.IsNullOrWhiteSpace(data))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Missing clipboard data" }, ct);
+                            break;
+                        }
+
+                        try
+                        {
+                            // Decode base64 data
+                            var bytes = Convert.FromBase64String(data);
+                            var text = System.Text.Encoding.UTF8.GetString(bytes);
+                            _pc.SetClipboard(text);
+                            await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = $"Clipboard set failed: {ex.Message}" }, ct);
                         }
 
                         break;

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 
 namespace Pconnect.Agent.Services;
 
@@ -192,6 +193,21 @@ internal sealed class PcActions
         catch
         {
             return false;
+        }
+    }
+
+    public void SetClipboard(string text)
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(text))
+            {
+                Clipboard.SetText(text);
+            }
+        }
+        catch
+        {
+            // Fail silently - clipboard may be in use
         }
     }
 }
