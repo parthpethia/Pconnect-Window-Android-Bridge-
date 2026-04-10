@@ -1739,6 +1739,31 @@ class FileTransferProgress {
   }
 }
 
+class RemoteFile {
+  final String path;
+  final String name;
+  final int modified;
+  final int size;
+
+  RemoteFile({
+    required this.path,
+    required this.name,
+    required this.modified,
+    required this.size,
+  });
+
+  String get sizeStr {
+    if (size < 1024) return '$size B';
+    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(2)} KB';
+    return '${(size / 1024 / 1024).toStringAsFixed(2)} MB';
+  }
+
+  String get modifiedStr {
+    final dt = DateTime.fromMillisecondsSinceEpoch(modified);
+    return dt.toString().split('.')[0];
+  }
+}
+
 class PcConnection {
   final String deviceId;
 
@@ -1754,6 +1779,9 @@ class PcConnection {
 
   final ValueNotifier<Map<String, FileTransferProgress>> activeTransfersNotifier =
       ValueNotifier({});
+
+  final ValueNotifier<List<RemoteFile>> recentFilesNotifier =
+      ValueNotifier([]);
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -1860,6 +1888,26 @@ class PcConnection {
               final newHistory = [text, ...history.take(9)];
               clipboardHistoryNotifier.value = newHistory;
             }
+          }
+        } catch (_) {
+          // ignore
+        }
+        return;
+      }
+
+      if (type == 'recentFilesList') {
+        try {
+          final files = obj['files'] as List<dynamic>?;
+          if (files != null) {
+            final recentList = files.map((f) {
+              return RemoteFile(
+                path: f['path'] as String? ?? '',
+                name: f['name'] as String? ?? '',
+                modified: (f['modified'] as num?)?.toInt() ?? 0,
+                size: (f['size'] as num?)?.toInt() ?? 0,
+              );
+            }).toList();
+            recentFilesNotifier.value = recentList;
           }
         } catch (_) {
           // ignore

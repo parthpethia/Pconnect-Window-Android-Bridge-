@@ -420,6 +420,27 @@ internal sealed class WebSocketHandler
                         break;
                     }
 
+                case "listrecentfiles":
+                    {
+                        var limit = msg.GetIntOrDefault("limit", 20);
+                        var recentFiles = RecentFilesHelper.GetRecentFiles(limit);
+
+                        await SendAsync(ws, new
+                        {
+                            v = 1,
+                            type = "recentFilesList",
+                            files = recentFiles.Select(f => new
+                            {
+                                path = f.Path,
+                                name = f.Name,
+                                modified = f.Modified,
+                                size = f.Size
+                            }).ToList(),
+                            status = "ok"
+                        }, ct);
+                        break;
+                    }
+
                 default:
                     await SendAsync(ws, new { v = 1, type = "error", message = $"Unknown type: {typeRaw}" }, ct);
                     break;
