@@ -179,7 +179,12 @@ PC → Client
 Client → PC
 
 ```json
-{ "v": 1, "type": "clipboardSet", "data": "<base64-encoded-utf8>", "format": "text/plain" }
+{
+  "v": 1,
+  "type": "clipboardSet",
+  "data": "<base64-encoded-utf8>",
+  "format": "text/plain"
+}
 ```
 
 - `data`: Base64-encoded text content
@@ -196,11 +201,134 @@ PC → Client
 PC → Client (pushed when system clipboard changes on PC)
 
 ```json
-{ "v": 1, "type": "clipboardUpdate", "data": "<base64-encoded-utf8>", "format": "text/plain", "source": "system" }
+{
+  "v": 1,
+  "type": "clipboardUpdate",
+  "data": "<base64-encoded-utf8>",
+  "format": "text/plain",
+  "source": "system"
+}
 ```
 
 - Phone receives this when user copies on PC
 - `source`: always `"system"` (for future extension to other sources)
+
+### File Transfer
+
+#### Initiate transfer
+
+Client → PC
+
+```json
+{
+  "v": 1,
+  "type": "fileTransferStart",
+  "id": "<uuid>",
+  "filename": "document.pdf",
+  "size": 1048576,
+  "direction": "upload"
+}
+```
+
+- `id`: Unique transfer ID
+- `filename`: Desired filename
+- `size`: Total file size in bytes
+- `direction`: `"upload"` (phone→PC) or `"download"` (PC→phone)
+
+PC → Client (ack)
+
+```json
+{ "v": 1, "type": "fileTransferAck", "id": "<uuid>", "ready": true }
+```
+
+#### Transfer chunk
+
+Client → PC
+
+```json
+{
+  "v": 1,
+  "type": "fileTransferChunk",
+  "id": "<uuid>",
+  "chunkIndex": 0,
+  "totalChunks": 20,
+  "data": "<base64-chunk>",
+  "size": 52428
+}
+```
+
+- `data`: Base64-encoded chunk (50KB recommended)
+- `chunkIndex`: 0-indexed chunk number
+- `totalChunks`: Total number of chunks
+
+PC → Client (progress)
+
+```json
+{
+  "v": 1,
+  "type": "fileTransferProgress",
+  "id": "<uuid>",
+  "chunkIndex": 0,
+  "received": 52428,
+  "total": 1048576
+}
+```
+
+#### Complete transfer
+
+Client → PC
+
+```json
+{ "v": 1, "type": "fileTransferComplete", "id": "<uuid>" }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "fileTransferComplete", "id": "<uuid>", "status": "success" }
+```
+
+#### Abort transfer
+
+Client → PC
+
+```json
+{ "v": 1, "type": "fileTransferAbort", "id": "<uuid>" }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+### Recent Files
+
+Client → PC
+
+```json
+{ "v": 1, "type": "listRecentFiles", "limit": 20 }
+```
+
+PC → Client
+
+```json
+{
+  "v": 1,
+  "type": "recentFilesList",
+  "files": [
+    {
+      "path": "C:\\Users\\User\\Documents\\report.docx",
+      "name": "report.docx",
+      "modified": 1712700000000,
+      "size": 102400
+    }
+  ],
+  "status": "ok"
+}
+```
+
+- `files`: Array of {path, name, modified (timestamp ms), size}
 
 ### Mouse / Trackpad control
 

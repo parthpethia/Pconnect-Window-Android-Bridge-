@@ -12,6 +12,7 @@ internal sealed class WebSocketHandler
     private readonly PairedDevicesStore _paired;
     private readonly PcActions _pc;
     private readonly IUiActions _ui;
+    private readonly FileTransferManager _fileTransfer = new();
     private readonly Action<string, string?>? _onDeviceAuthed;
     private readonly Action<string>? _onDeviceDisconnected;
 
@@ -318,6 +319,107 @@ internal sealed class WebSocketHandler
                         break;
                     }
 
+                case "filetransferstart":
+                    {
+                        var id = msg.GetStringOrNull("id");
+                        var filename = msg.GetStringOrNull("filename");
+                        var size = msg.GetLongOrDefault("size", 0L);
+
+                        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(filename) || size <= 0)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid transfer parameters" }, ct);
+                            break;
+                        }
+
+                        var result = _fileTransfer.StartTransfer(id, filename, size);
+                        if (result == null)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Failed to start transfer" }, ct);
+                        }
+                        else
+                        {
+                            await SendAsync(ws, new { v = 1, type = "fileTransferAck", id, ready = true }, ct);
+                        }
+
+                        break;
+                    }
+
+                case "filetransferschunk":
+                    {
+                        var id = msg.GetStringOrNull("id");
+                        var chunkIndex = msg.GetIntOrDefault("chunkIndex", -1);
+                        var data = msg.GetStringOrNull("data");
+
+                        if (string.IsNullOrWhiteSpace(id) || chunkIndex < 0 || string.IsNullOrWhiteSpace(data))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid chunk parameters" }, ct);
+                            break;
+                        }
+
+                        try
+                        {
+                            var bytes = Convert.FromBase64String(data);
+                            var success = _fileTransfer.WriteChunk(id, chunkIndex, bytes);
+                            if (success)
+                            {
+                                var progress = _fileTransfer.GetProgress(id);
+                                await SendAsync(ws, new
+                                {
+                                    v = 1,
+                                    type = "fileTransferProgress",
+                                    id,
+                                    chunkIndex,
+                                    received = progress?.received ?? 0,
+                                    total = progress?.total ?? 0
+                                }, ct);
+                            }
+                            else
+                            {
+                                await SendAsync(ws, new { v = 1, type = "error", message = "Failed to write chunk" }, ct);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = $"Chunk write error: {ex.Message}" }, ct);
+                        }
+
+                        break;
+                    }
+
+                case "filetransfercomplete":
+                    {
+                        var id = msg.GetStringOrNull("id");
+                        if (string.IsNullOrWhiteSpace(id))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Missing transfer id" }, ct);
+                            break;
+                        }
+
+                        var success = _fileTransfer.CompleteTransfer(id);
+                        if (success)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "fileTransferComplete", id, status = "success" }, ct);
+                        }
+                        else
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Failed to complete transfer" }, ct);
+                        }
+
+                        break;
+                    }
+
+                case "filetransferabort":
+                    {
+                        var id = msg.GetStringOrNull("id");
+                        if (!string.IsNullOrWhiteSpace(id))
+                        {
+                            _fileTransfer.AbortTransfer(id);
+                        }
+
+                        await SendAsync(ws, new { v = 1, type = "ok" }, ct);
+                        break;
+                    }
+
                 default:
                     await SendAsync(ws, new { v = 1, type = "error", message = $"Unknown type: {typeRaw}" }, ct);
                     break;
@@ -408,6 +510,20 @@ internal static class JsonDictExtensions
         return el.ValueKind switch
         {
             JsonValueKind.Number when el.TryGetInt32(out var v) => v,
+            _ => fallback,
+        };
+    }
+
+    public static long GetLongOrDefault(this Dictionary<string, JsonElement> dict, string key, long fallback)
+    {
+        if (!dict.TryGetValue(key, out var el))
+        {
+            return fallback;
+        }
+
+        return el.ValueKind switch
+        {
+            JsonValueKind.Number when el.TryGetInt64(out var v) => v,
             _ => fallback,
         };
     }

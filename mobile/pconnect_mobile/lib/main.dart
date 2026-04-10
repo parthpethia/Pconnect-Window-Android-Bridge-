@@ -1711,6 +1711,34 @@ class ClipboardSyncScreen extends StatelessWidget {
   }
 }
 
+class FileTransferProgress {
+  final String filename;
+  final int totalBytes;
+  int transferredBytes;
+  final DateTime startTime;
+  final bool isDownload;
+
+  FileTransferProgress({
+    required this.filename,
+    required this.totalBytes,
+    required this.isDownload,
+  })  : transferredBytes = 0,
+        startTime = DateTime.now();
+
+  double get progress => transferredBytes / totalBytes;
+  int get elapsedSeconds => DateTime.now().difference(startTime).inSeconds;
+  int get bytesPerSecond => elapsedSeconds > 0 ? transferredBytes ~/ elapsedSeconds : 0;
+  int get etaSeconds => bytesPerSecond > 0 ? (totalBytes - transferredBytes) ~/ bytesPerSecond : 0;
+
+  String get progressStr => '${(progress * 100).toStringAsFixed(1)}%';
+  String get speedStr => '${(bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} MB/s';
+  String get etaStr {
+    if (etaSeconds < 60) return '${etaSeconds}s';
+    if (etaSeconds < 3600) return '${etaSeconds ~/ 60}m ${etaSeconds % 60}s';
+    return '${etaSeconds ~/ 3600}h';
+  }
+}
+
 class PcConnection {
   final String deviceId;
 
@@ -1723,6 +1751,9 @@ class PcConnection {
 
   final ValueNotifier<List<String>> clipboardHistoryNotifier =
       ValueNotifier([]);
+
+  final ValueNotifier<Map<String, FileTransferProgress>> activeTransfersNotifier =
+      ValueNotifier({});
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -1957,6 +1988,93 @@ class PcConnection {
       'type': 'clipboardSet',
       'data': encoded,
       'format': 'text/plain',
+    });
+  }
+
+  Future<void> uploadFile(String filePath, {required Function(FileTransferProgress) onProgress}) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) return;
+
+      final bytes = await file.readAsBytes();
+      final filename = file.path.split('/').last;
+      final transferId = const Uuid().v4();
+
+      // Notify UI of transfer
+      final progress = FileTransferProgress(
+        filename: filename,
+        totalBytes: bytes.length,
+        isDownload: false,
+      );
+      activeTransfersNotifier.value = {
+        ...activeTransfersNotifier.value,
+        transferId: progress
+      };
+
+      // Start transfer
+      _send({
+        'v': 1,
+        'type': 'fileTransferStart',
+        'id': transferId,
+        'filename': filename,
+        'size': bytes.length,
+        'direction': 'upload',
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      // Send chunks
+      const chunkSize = 50 * 1024; // 50KB chunks
+      final totalChunks = (bytes.length / chunkSize).ceil();
+
+      for (int i = 0; i < totalChunks; i++) {
+        final start = i * chunkSize;
+        final end = (start + chunkSize).clamp(0, bytes.length);
+        final chunk = bytes.sublist(start, end);
+        final encoded = base64Encode(chunk);
+
+        _send({
+          'v': 1,
+          'type': 'fileTransferChunk',
+          'id': transferId,
+          'chunkIndex': i,
+          'totalChunks': totalChunks,
+          'data': encoded,
+          'size': chunk.length,
+        });
+
+        // Update progress
+        progress.transferredBytes = end;
+        onProgress(progress);
+        activeTransfersNotifier.value = {
+          ...activeTransfersNotifier.value,
+          transferId: progress
+        };
+
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      // Signal completion
+      _send({
+        'v': 1,
+        'type': 'fileTransferComplete',
+        'id': transferId,
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      activeTransfersNotifier.value = {
+        ...(activeTransfersNotifier.value..remove(transferId))
+      };
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  void requestRecentFiles({int limit = 20}) {
+    _send({
+      'v': 1,
+      'type': 'listRecentFiles',
+      'limit': limit,
     });
   }
 
