@@ -10,6 +10,8 @@ internal sealed class PairedDevicesStore
 
     private Dictionary<string, string> _tokensByDeviceId = new(StringComparer.Ordinal);
     private Dictionary<string, string> _namesByDeviceId = new(StringComparer.Ordinal);
+    private Dictionary<string, string> _rolesByDeviceId = new(StringComparer.Ordinal);
+    private Dictionary<string, bool> _autoLockByDeviceId = new(StringComparer.Ordinal);
 
     public PairedDevicesStore()
     {
@@ -26,6 +28,8 @@ internal sealed class PairedDevicesStore
             {
                 _tokensByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
                 _namesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                _rolesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                _autoLockByDeviceId = new Dictionary<string, bool>(StringComparer.Ordinal);
                 return;
             }
 
@@ -33,6 +37,8 @@ internal sealed class PairedDevicesStore
             var data = JsonSerializer.Deserialize<PairedDevicesFile>(json);
             _tokensByDeviceId = data?.TokensByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
             _namesByDeviceId = data?.NamesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            _rolesByDeviceId = data?.RolesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            _autoLockByDeviceId = data?.AutoLockByDeviceId ?? new Dictionary<string, bool>(StringComparer.Ordinal);
         }
     }
 
@@ -44,6 +50,8 @@ internal sealed class PairedDevicesStore
             {
                 TokensByDeviceId = _tokensByDeviceId,
                 NamesByDeviceId = _namesByDeviceId,
+                RolesByDeviceId = _rolesByDeviceId,
+                AutoLockByDeviceId = _autoLockByDeviceId,
             }, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_path, json);
         }
@@ -54,6 +62,45 @@ internal sealed class PairedDevicesStore
         lock (_gate)
         {
             return _namesByDeviceId.TryGetValue(deviceId, out var name) ? name : null;
+        }
+    }
+
+    /// <summary>
+    /// Returns the role for a device. Defaults to "admin" if not set.
+    /// Valid roles: "admin", "media_only", "readonly"
+    /// </summary>
+    public string GetRole(string deviceId)
+    {
+        lock (_gate)
+        {
+            if (_rolesByDeviceId.TryGetValue(deviceId, out var role) && !string.IsNullOrWhiteSpace(role))
+            {
+                return role;
+            }
+            return "admin";
+        }
+    }
+
+    /// <summary>
+    /// Returns whether auto-lock on disconnect is enabled for this device.
+    /// </summary>
+    public bool GetAutoLockOnDisconnect(string deviceId)
+    {
+        lock (_gate)
+        {
+            return _autoLockByDeviceId.TryGetValue(deviceId, out var v) && v;
+        }
+    }
+
+    /// <summary>
+    /// Sets the auto-lock on disconnect setting for a device.
+    /// </summary>
+    public void SetAutoLockOnDisconnect(string deviceId, bool enabled)
+    {
+        lock (_gate)
+        {
+            _autoLockByDeviceId[deviceId] = enabled;
+            Save();
         }
     }
 
@@ -84,6 +131,12 @@ internal sealed class PairedDevicesStore
                 _namesByDeviceId[deviceId] = deviceName.Trim();
             }
 
+            // New devices get admin role by default
+            if (!_rolesByDeviceId.ContainsKey(deviceId))
+            {
+                _rolesByDeviceId[deviceId] = "admin";
+            }
+
             Save();
         }
 
@@ -100,5 +153,7 @@ internal sealed class PairedDevicesStore
     {
         public Dictionary<string, string>? TokensByDeviceId { get; set; }
         public Dictionary<string, string>? NamesByDeviceId { get; set; }
+        public Dictionary<string, string>? RolesByDeviceId { get; set; }
+        public Dictionary<string, bool>? AutoLockByDeviceId { get; set; }
     }
 }

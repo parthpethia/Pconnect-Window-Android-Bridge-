@@ -11,6 +11,8 @@ All messages are UTF-8 JSON objects:
 - `v`: number protocol version (required, currently `1`)
 - `requestId`: string (optional, client-generated)
 
+Unknown message types MUST be silently ignored for forward-compatibility.
+
 ## Authentication
 
 A client must authenticate before sending control commands.
@@ -30,9 +32,12 @@ PC → Client (if token valid)
   "v": 1,
   "type": "helloAck",
   "pcName": "<name>",
-  "capabilities": ["lock", "text", "launch", "show"]
+  "role": "admin",
+  "capabilities": ["lock", "text", "launch", "show", "mouse", "keyboard", "volume", "brightness", "shutdown", "clipboard", "fileTransfer", "recentFiles", "keyCombo", "mediaKey", "screenCapture", "notification", "appList", "customCommands", "auditLog"]
 }
 ```
+
+- `role`: `"admin"` | `"media_only"` | `"readonly"` — the device's permission role
 
 PC → Client (if not paired)
 
@@ -57,8 +62,10 @@ Client → PC
 PC → Client
 
 ```json
-{ "v": 1, "type": "paired", "deviceId": "<uuid>", "token": "<random-token>" }
+{ "v": 1, "type": "paired", "deviceId": "<uuid>", "token": "<random-token>", "role": "admin" }
 ```
+
+- New devices are assigned `"admin"` role by default.
 
 ## Commands (require auth)
 
@@ -108,6 +115,45 @@ Client → PC
 - `action`: `press` | `down` | `up`
 - Optional: `extended`: boolean (for extended keys like arrows)
 
+### Key Combo (named-key shortcut)
+
+Client → PC
+
+```json
+{ "v": 1, "type": "keyCombo", "keys": ["ctrl", "shift", "esc"] }
+```
+
+- `keys`: array of named keys. Supported names:
+  `ctrl`, `shift`, `alt`, `win`, `enter`, `tab`, `esc`, `space`, `backspace`, `delete`,
+  `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`,
+  `f1`–`f12`, `a`–`z`, `0`–`9`,
+  and any single character.
+- The PC presses all modifier keys down, presses the last key, then releases all.
+- **Role**: requires `admin`.
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+### Media Keys
+
+Client → PC
+
+```json
+{ "v": 1, "type": "mediaKey", "key": "play_pause" }
+```
+
+- `key`: `"play_pause"` | `"next"` | `"prev"` | `"stop"` | `"mute"` | `"vol_up"` | `"vol_down"`
+- **Role**: requires `admin` or `media_only`.
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
 ### Set system volume
 
 Client → PC
@@ -117,6 +163,7 @@ Client → PC
 ```
 
 - `level`: integer `0..100`
+- **Role**: requires `admin` or `media_only`.
 
 PC → Client
 
@@ -146,6 +193,20 @@ Client → PC
 
 ```json
 { "v": 1, "type": "launch", "command": "notepad", "args": ["C:/temp/a.txt"] }
+```
+
+### Launch app (by path from app list)
+
+Client → PC
+
+```json
+{ "v": 1, "type": "launchApp", "exePath": "C:\\Program Files\\..." }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
 ```
 
 ### Show agent UI (bring to front)
@@ -372,6 +433,138 @@ Client → PC
 
 - `button`: `left` | `right` | `middle`
 - `action`: `click` | `down` | `up`
+
+### Screen Capture (low-fps preview)
+
+#### Enable/disable capture
+
+Client → PC
+
+```json
+{ "v": 1, "type": "screenCaptureStart", "intervalMs": 2000 }
+```
+
+```json
+{ "v": 1, "type": "screenCaptureStop" }
+```
+
+#### Screen frame (pushed by PC while capture active)
+
+PC → Client
+
+```json
+{
+  "v": 1,
+  "type": "screenFrame",
+  "data": "<base64-jpeg>",
+  "width": 480,
+  "height": 270
+}
+```
+
+### App List
+
+Client → PC
+
+```json
+{ "v": 1, "type": "getAppList" }
+```
+
+PC → Client
+
+```json
+{
+  "v": 1,
+  "type": "appList",
+  "apps": [
+    {
+      "name": "Notepad",
+      "iconBase64": "<base64-png>",
+      "exePath": "C:\\Windows\\notepad.exe"
+    }
+  ]
+}
+```
+
+### Custom Commands
+
+Client → PC
+
+```json
+{ "v": 1, "type": "getCommands" }
+```
+
+PC → Client
+
+```json
+{
+  "v": 1,
+  "type": "commandList",
+  "commands": [
+    { "label": "Start OBS", "command": "cmd /c start obs64.exe" }
+  ]
+}
+```
+
+Client → PC
+
+```json
+{ "v": 1, "type": "runCommand", "index": 0 }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+### Notification Mirror
+
+PC → Client (pushed when a toast notification appears on PC)
+
+```json
+{
+  "v": 1,
+  "type": "notification",
+  "title": "New email",
+  "body": "You have a new email from ...",
+  "appName": "Microsoft Outlook"
+}
+```
+
+### Settings Sync
+
+Client → PC
+
+```json
+{ "v": 1, "type": "settingsSync", "autoLockOnDisconnect": true }
+```
+
+PC → Client
+
+```json
+{ "v": 1, "type": "ok" }
+```
+
+### Audit Log
+
+Client → PC
+
+```json
+{ "v": 1, "type": "getLogs", "date": "2026-05-09" }
+```
+
+PC → Client
+
+```json
+{
+  "v": 1,
+  "type": "logEntries",
+  "entries": [
+    { "time": "2026-05-09T14:30:00+05:30", "device": "Android Phone", "action": "lock" }
+  ]
+}
+```
 
 ## Error
 
