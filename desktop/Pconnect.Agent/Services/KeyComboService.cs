@@ -39,6 +39,12 @@ internal static class KeyComboService
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    [DllImport("user32.dll")]
+    private static extern nuint GetMessageExtraInfo();
+
     // Modifier keys
     private static readonly HashSet<string> Modifiers = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -80,25 +86,44 @@ internal static class KeyComboService
             inputs.Add(KeyDown(vk, ext));
         }
 
+        // Send modifier key-downs first
+        if (inputs.Count > 0)
+        {
+            var modArr = inputs.ToArray();
+            SendInput((uint)modArr.Length, modArr, Marshal.SizeOf<INPUT>());
+            Thread.Sleep(30); // Allow OS to register modifier state
+        }
+
         // Press and release action keys
+        var actionInputs = new List<INPUT>();
         foreach (var (vk, ext) in actionVks)
         {
-            inputs.Add(KeyDown(vk, ext));
-            inputs.Add(KeyUp(vk, ext));
+            actionInputs.Add(KeyDown(vk, ext));
+            actionInputs.Add(KeyUp(vk, ext));
+        }
+
+        if (actionInputs.Count > 0)
+        {
+            var actArr = actionInputs.ToArray();
+            SendInput((uint)actArr.Length, actArr, Marshal.SizeOf<INPUT>());
+            Thread.Sleep(30); // Allow OS to register key press
         }
 
         // Release modifiers in reverse
+        var releaseInputs = new List<INPUT>();
         for (int i = modifierVks.Count - 1; i >= 0; i--)
         {
             var (vk, ext) = modifierVks[i];
-            inputs.Add(KeyUp(vk, ext));
+            releaseInputs.Add(KeyUp(vk, ext));
         }
 
-        if (inputs.Count == 0) return false;
+        if (releaseInputs.Count > 0)
+        {
+            var relArr = releaseInputs.ToArray();
+            SendInput((uint)relArr.Length, relArr, Marshal.SizeOf<INPUT>());
+        }
 
-        var arr = inputs.ToArray();
-        var sent = SendInput((uint)arr.Length, arr, Marshal.SizeOf<INPUT>());
-        return sent > 0;
+        return true;
     }
 
     private static (ushort vk, bool extended)? ResolveKey(string key)
@@ -179,6 +204,7 @@ internal static class KeyComboService
 
     private static INPUT KeyDown(ushort vk, bool extended)
     {
+        var scan = (ushort)MapVirtualKey(vk, 0); // MAPVK_VK_TO_VSC
         return new INPUT
         {
             type = INPUT_KEYBOARD,
@@ -187,10 +213,10 @@ internal static class KeyComboService
                 ki = new KEYBDINPUT
                 {
                     wVk = vk,
-                    wScan = 0,
+                    wScan = scan,
                     dwFlags = extended ? KEYEVENTF_EXTENDEDKEY : 0,
                     time = 0,
-                    dwExtraInfo = 0,
+                    dwExtraInfo = GetMessageExtraInfo(),
                 }
             }
         };
@@ -198,6 +224,7 @@ internal static class KeyComboService
 
     private static INPUT KeyUp(ushort vk, bool extended)
     {
+        var scan = (ushort)MapVirtualKey(vk, 0); // MAPVK_VK_TO_VSC
         return new INPUT
         {
             type = INPUT_KEYBOARD,
@@ -206,10 +233,10 @@ internal static class KeyComboService
                 ki = new KEYBDINPUT
                 {
                     wVk = vk,
-                    wScan = 0,
+                    wScan = scan,
                     dwFlags = (extended ? KEYEVENTF_EXTENDEDKEY : 0) | KEYEVENTF_KEYUP,
                     time = 0,
-                    dwExtraInfo = 0,
+                    dwExtraInfo = GetMessageExtraInfo(),
                 }
             }
         };

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connection.dart';
@@ -429,12 +430,45 @@ class _QrScanPage extends StatefulWidget {
 }
 
 class _QrScanPageState extends State<_QrScanPage> {
-  final MobileScannerController _controller = MobileScannerController();
+  MobileScannerController? _controller;
   bool _handled = false;
+  bool _permissionGranted = false;
+  bool _permissionDenied = false;
+  bool _permissionPermanentlyDenied = false;
+  bool _checking = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _requestCameraPermission();
+  }
+
+  Future<void> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+    if (!mounted) return;
+
+    if (status.isGranted) {
+      setState(() {
+        _permissionGranted = true;
+        _checking = false;
+        _controller = MobileScannerController();
+      });
+    } else if (status.isPermanentlyDenied) {
+      setState(() {
+        _permissionPermanentlyDenied = true;
+        _checking = false;
+      });
+    } else {
+      setState(() {
+        _permissionDenied = true;
+        _checking = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _controller?.dispose();
     super.dispose();
   }
 
@@ -460,33 +494,97 @@ class _QrScanPageState extends State<_QrScanPage> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(title: const Text('Scan QR Code')),
-      body: Stack(
-        children: [
-          MobileScanner(
-            controller: _controller,
-            onDetect: _onDetect,
-          ),
-          Positioned(
-            bottom: 32,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Card(
-                color: Colors.black54,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: Text(
-                    'Point at the QR code on the PC tray window',
-                    style: TextStyle(color: Colors.white.withOpacity(0.9)),
+      body: _checking
+          ? const Center(child: CircularProgressIndicator())
+          : _permissionPermanentlyDenied
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.camera_alt_outlined, size: 64, color: cs.error),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Camera Permission Required',
+                          style: Theme.of(context).textTheme.titleLarge,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Camera access was permanently denied.\nPlease enable it in app settings to scan QR codes.',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 24),
+                        FilledButton.icon(
+                          onPressed: () => openAppSettings(),
+                          icon: const Icon(Icons.settings),
+                          label: const Text('Open Settings'),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+                )
+              : _permissionDenied
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.no_photography_outlined, size: 64, color: cs.error),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Camera Access Denied',
+                              style: Theme.of(context).textTheme.titleLarge,
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Camera permission is needed to scan QR codes.',
+                              style: TextStyle(color: cs.onSurfaceVariant),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 24),
+                            FilledButton.icon(
+                              onPressed: _requestCameraPermission,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Try Again'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : Stack(
+                      children: [
+                        MobileScanner(
+                          controller: _controller!,
+                          onDetect: _onDetect,
+                        ),
+                        Positioned(
+                          bottom: 32,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: Card(
+                              color: Colors.black54,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                child: Text(
+                                  'Point at the QR code on the PC tray window',
+                                  style: TextStyle(color: Colors.white.withOpacity(0.9)),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
     );
   }
 }

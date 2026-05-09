@@ -78,61 +78,60 @@ internal static class SystemVolume
 
     public static bool TrySetPercent(int level)
     {
-        var comInited = false;
-        try
+        level = Math.Clamp(level, 0, 100);
+
+        // CoreAudio COM objects are apartment-threaded (STA).
+        // Kestrel request threads run in MTA, so we must dispatch onto
+        // a dedicated STA thread to avoid COM marshalling failures.
+        var success = false;
+        var thread = new Thread(() =>
         {
-            // This is called from Kestrel request threads (ThreadPool). CoreAudio COM APIs require
-            // the calling thread to be COM-initialized, otherwise activation fails.
-            var hrInit = CoInitializeEx(nint.Zero, COINIT_MULTITHREADED);
-            comInited = hrInit is S_OK or S_FALSE;
-
-            level = Math.Clamp(level, 0, 100);
-            var scalar = level / 100f;
-
-            static bool TrySetForRole(float scalar, ERole role)
+            try
             {
-                IMMDeviceEnumerator? enumerator = null;
-                IMMDevice? device = null;
-                object? obj = null;
-                try
-                {
-                    enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
-                    device = enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, role);
+                var scalar = level / 100f;
 
-                    var iid = typeof(IAudioEndpointVolume).GUID;
-                    var hr = device.Activate(ref iid, CLSCTX_ALL, nint.Zero, out obj);
-                    if (hr != 0)
+                static bool TrySetForRole(float scalar, ERole role)
+                {
+                    IMMDeviceEnumerator? enumerator = null;
+                    IMMDevice? device = null;
+                    object? obj = null;
+                    try
                     {
-                        return false;
+                        enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                        device = enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, role);
+
+                        var iid = typeof(IAudioEndpointVolume).GUID;
+                        var hr = device.Activate(ref iid, CLSCTX_ALL, nint.Zero, out obj);
+                        if (hr != 0)
+                        {
+                            return false;
+                        }
+
+                        var endpoint = (IAudioEndpointVolume)obj;
+                        var ctx = Guid.Empty;
+                        hr = endpoint.SetMasterVolumeLevelScalar(scalar, ref ctx);
+                        return hr == 0;
                     }
+                    finally
+                    {
+                        if (obj is not null) Marshal.FinalReleaseComObject(obj);
+                        if (device is not null) Marshal.FinalReleaseComObject(device);
+                        if (enumerator is not null) Marshal.FinalReleaseComObject(enumerator);
+                    }
+                }
 
-                    var endpoint = (IAudioEndpointVolume)obj;
-                    var ctx = Guid.Empty;
-                    hr = endpoint.SetMasterVolumeLevelScalar(scalar, ref ctx);
-                    return hr == 0;
-                }
-                finally
-                {
-                    if (obj is not null) Marshal.FinalReleaseComObject(obj);
-                    if (device is not null) Marshal.FinalReleaseComObject(device);
-                    if (enumerator is not null) Marshal.FinalReleaseComObject(enumerator);
-                }
+                // Try Multimedia first (common for media playback), then Console as a fallback.
+                success = TrySetForRole(scalar, ERole.eMultimedia) || TrySetForRole(scalar, ERole.eConsole);
             }
-
-            // Try Multimedia first (common for media playback), then Console as a fallback.
-            return TrySetForRole(scalar, ERole.eMultimedia) || TrySetForRole(scalar, ERole.eConsole);
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            if (comInited)
+            catch
             {
-                CoUninitialize();
+                success = false;
             }
-        }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join(TimeSpan.FromSeconds(3));
+        return success;
     }
 
     [DllImport("ole32.dll")]

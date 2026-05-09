@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import 'services/connection.dart';
 import 'screens/home_screen.dart';
 import 'screens/control_screen.dart';
+import 'screens/remote_control_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/discovery_screen.dart';
@@ -219,6 +220,7 @@ class _MainShellState extends State<MainShell> {
         status: _status,
         onOpenDiscovery: _openDiscovery,
       ),
+      RemoteControlScreen(conn: conn, connected: _status.connected),
       ControlScreen(conn: conn, status: _status),
       SettingsScreen(
         conn: conn,
@@ -238,6 +240,7 @@ class _MainShellState extends State<MainShell> {
         onDestinationSelected: (i) => setState(() => _currentIndex = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_rounded), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.screen_share_rounded), label: 'Remote'),
           NavigationDestination(icon: Icon(Icons.gamepad_rounded), label: 'Control'),
           NavigationDestination(icon: Icon(Icons.settings_rounded), label: 'Settings'),
           NavigationDestination(icon: Icon(Icons.receipt_long_rounded), label: 'Logs'),
