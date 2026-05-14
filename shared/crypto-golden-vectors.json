@@ -1,0 +1,15 @@
+{
+  "protocol": "pconnect-crypto-v1",
+  "hkdf_sha256_integrity": {
+    "ikm_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "salt_hex": "404142434445464748494a4b4c4d4e4f",
+    "info_utf8": "pconnect/v1/integrity",
+    "expected_integrity_key_hex": "EA55716A99CF6B48D8D5129B256226A6F2464EFD7112B06D850A719C5F7EEC5B"
+  },
+  "hmac_sha256_command": {
+    "integrity_key_hex": "EA55716A99CF6B48D8D5129B256226A6F2464EFD7112B06D850A719C5F7EEC5B",
+    "seq": 1,
+    "canon_utf8": "shutdown|1326",
+    "expected_mac_b64": "3nT4/roLH63Dd20w7/2x/aIh6PnNR9QHG9NcL/giUmI="
+  }
+}

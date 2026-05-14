@@ -1,0 +1,36 @@
+name: build-agent
+on:
+  push:
+    paths:
+      - "desktop/Pconnect.Agent/**"
+      - "desktop/Pconnect.Agent.Tests/**"
+      - "shared/**"
+      - "mobile/pconnect_mobile/test/**"
+      - "mobile/pconnect_mobile/lib/services/session_crypto.dart"
+      - ".github/workflows/build-agent.yml"
+  pull_request:
+    paths:
+      - "desktop/Pconnect.Agent/**"
+      - "desktop/Pconnect.Agent.Tests/**"
+      - "shared/**"
+      - "mobile/pconnect_mobile/test/**"
+      - "mobile/pconnect_mobile/lib/services/session_crypto.dart"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Build agent
+        run: dotnet build "desktop/Pconnect.Agent/Pconnect.Agent.csproj" -c Release
+      - name: Desktop crypto + semver tests
+        run: dotnet test "desktop/Pconnect.Agent.Tests/Pconnect.Agent.Tests.csproj" -c Release
+      - name: Flutter golden crypto tests
+        working-directory: mobile/pconnect_mobile
+        run: flutter pub get && flutter test test/crypto_golden_test.dart

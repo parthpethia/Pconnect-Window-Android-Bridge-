@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../utils/notifications.dart';
+import 'pc_websocket.dart';
+import 'session_crypto.dart';
 
 const int kWsPortDefault = 47821;
+const int kDefaultWssPort = 47824;
 const int kDiscoveryPort = 47822;
 const String kDiscoverProbe = 'PCONNECT_DISCOVER_V1';
 
@@ -15,7 +19,8 @@ class DiscoveredPc {
   final String name;
   final InternetAddress address;
   final int wsPort;
-  DiscoveredPc({required this.name, required this.address, required this.wsPort});
+  final int? wssPort;
+  DiscoveredPc({required this.name, required this.address, required this.wsPort, this.wssPort});
 }
 
 class ConnectionStatus {
@@ -113,23 +118,35 @@ class PcConnection {
 
   String? _host;
   int? _port;
+  int? _wssPort;
   String? _token;
   String? _lastClipboardContent;
+  bool _disposed = false;
+
+  Uint8List? _sessionNonceBytes;
+  Uint8List? _integrityKeyBytes;
+  int _cmdSeq = 0;
+  String? _lastTransportTrace;
 
   Timer? _reconnectTimer;
   int _reconnectDelayMs = 500;
-  DateTime? _lastSendFailure;
+
+  Completer<Map<String, dynamic>>? _diagCompleter;
 
   PcConnection({required this.deviceId});
 
   void _setStatus(ConnectionStatus s) {
+    if (_disposed) return;
     statusNotifier.value = s;
-    _statusController.add(s);
+    if (!_statusController.isClosed) {
+      _statusController.add(s);
+    }
   }
 
-  Future<void> connect({required String host, required int port, required String? token}) async {
+  Future<void> connect({required String host, required int port, required String? token, int? wssPort}) async {
     _host = host;
     _port = port;
+    _wssPort = wssPort;
     _token = token;
     await _connectInternal();
   }
@@ -140,30 +157,74 @@ class PcConnection {
     final port = _port;
     if (host == null || port == null) return;
 
-    final uri = Uri.parse('ws://$host:$port/ws');
+    _integrityKeyBytes = null;
+    _cmdSeq = 0;
+
     try {
-      final channel = WebSocketChannel.connect(uri);
+      final channel = await PcWebSocket.connectPreferred(
+        host: host,
+        wsPort: port,
+      wssPort: _wssPort ?? kDefaultWssPort,
+        preferTls: !kIsWeb && Platform.isAndroid,
+        onTrace: (t, d) => _lastTransportTrace = '$t $d',
+      );
+      if (channel == null) {
+        _scheduleReconnect('Connect failed (no channel)');
+        return;
+      }
       _channel = channel;
       _sub?.cancel();
       _sub = channel.stream.listen(
-        (event) => _onMessage(event),
+        (event) => unawaited(_onMessage(event)),
         onError: (e) => _scheduleReconnect('WebSocket error: $e'),
         onDone: () => _scheduleReconnect('Disconnected'),
         cancelOnError: true,
       );
-      _send({'v': 1, 'type': 'hello', 'deviceId': deviceId, if (_token != null) 'token': _token});
+      _send({
+        'v': 1,
+        'type': 'hello',
+        'proto': 2,
+        'clientVersion': '0.2.0+1',
+        'deviceId': deviceId,
+        if (_token != null) 'token': _token,
+      });
     } catch (e) {
       _scheduleReconnect('Connect failed: $e');
     }
   }
 
-  void _onMessage(dynamic event) {
+  Future<void> _armIntegrityKey() async {
+    _integrityKeyBytes = null;
+    final tok = _token;
+    final nonce = _sessionNonceBytes;
+    if (tok == null || nonce == null) return;
+    final tb = SessionCrypto.parseTokenHex(tok);
+    if (tb == null) return;
+    try {
+      _integrityKeyBytes = SessionCrypto.deriveIntegrityKeyBytes(tb, nonce);
+    } catch (_) {}
+  }
+
+  Map<String, dynamic> _withMac(String canon, Map<String, dynamic> payload) {
+    final k = _integrityKeyBytes;
+    if (k == null) return payload;
+    _cmdSeq++;
+    final mac = SessionCrypto.commandMacSync(k, _cmdSeq, canon);
+    return {...payload, 'cmdSeq': _cmdSeq, 'cmdMac': mac};
+  }
+
+  Future<void> _onMessage(dynamic event) async {
     try {
       final obj = jsonDecode(event as String) as Map<String, dynamic>;
       final type = obj['type'];
 
       switch (type) {
+        case 'welcome':
+          _sessionNonceBytes = SessionCrypto.parseSessionNonce(obj['sessionNonce'] as String?);
+          break;
+
         case 'helloAck':
+          await _armIntegrityKey();
           _reconnectDelayMs = 500;
           _setStatus(ConnectionStatus(
             connected: true,
@@ -180,6 +241,7 @@ class PcConnection {
         case 'paired':
           final token = obj['token'] as String?;
           if (token != null) _token = token;
+          await _armIntegrityKey();
           break;
 
         case 'clipboardUpdate':
@@ -270,6 +332,12 @@ class PcConnection {
           _onNotification?.call(notifTitle, notifBody, notifAppName);
           break;
 
+        case 'networkDiagnostics':
+          if (_diagCompleter != null && !_diagCompleter!.isCompleted) {
+            _diagCompleter!.complete(obj);
+          }
+          break;
+
         case 'error':
           final msg = obj['message'] as String? ?? 'Unknown error';
           final cur = currentStatus;
@@ -285,6 +353,24 @@ class PcConnection {
     } catch (_) {}
   }
 
+  String? get lastTransportTrace => _lastTransportTrace;
+
+  Future<Map<String, dynamic>?> fetchNetworkDiagnostics() async {
+    if (!currentStatus.connected) return null;
+    final c = Completer<Map<String, dynamic>>();
+    _diagCompleter = c;
+    _send({'v': 1, 'type': 'networkDiagnostics'});
+    try {
+      return await c.future.timeout(const Duration(seconds: 8));
+    } catch (_) {
+      return null;
+    } finally {
+      if (_diagCompleter == c) {
+        _diagCompleter = null;
+      }
+    }
+  }
+
   // Notification callback
   void Function(String title, String body, String appName)? _onNotification;
   set onNotification(void Function(String title, String body, String appName)? cb) {
@@ -292,13 +378,14 @@ class PcConnection {
   }
 
   Future<String?> pair({required String code, required String deviceName}) async {
+    final tokenBefore = _token;
     _send({
       'v': 1, 'type': 'pair',
       'deviceId': deviceId, 'deviceName': deviceName, 'code': code,
     });
-    for (var i = 0; i < 20; i++) {
+    for (var i = 0; i < 40; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      if (_token != null) return _token;
+      if (_token != null && _token != tokenBefore) return _token;
     }
     return null;
   }
@@ -311,11 +398,12 @@ class PcConnection {
   }
 
   void launchApp(String command, {List<String>? args}) {
-    _send({'v': 1, 'type': 'launch', 'command': command, if (args != null) 'args': args});
+    final argCanon = (args == null || args.isEmpty) ? '' : args.join('\x1e');
+    _send(_withMac('launch|$command|$argCanon', {'v': 1, 'type': 'launch', 'command': command, if (args != null) 'args': args}));
   }
 
   void launchAppByPath(String exePath) {
-    _send({'v': 1, 'type': 'launchApp', 'exePath': exePath});
+    _send(_withMac('launchapp|$exePath', {'v': 1, 'type': 'launchApp', 'exePath': exePath}));
   }
 
   void mouseMove({required int dx, required int dy}) {
@@ -361,7 +449,7 @@ class PcConnection {
   }
 
   void shutdownPc({required String password}) {
-    _send({'v': 1, 'type': 'shutdown', 'password': password});
+    _send(_withMac('shutdown|$password', {'v': 1, 'type': 'shutdown', 'password': password}));
   }
 
   // ── Clipboard ──
@@ -393,12 +481,16 @@ class PcConnection {
   }
 
   void runCommand(int index) {
-    _send({'v': 1, 'type': 'runCommand', 'index': index});
+    _send(_withMac('runcommand|$index', {'v': 1, 'type': 'runCommand', 'index': index}));
   }
 
   // ── Settings ──
   void settingsSync({required bool autoLockOnDisconnect}) {
-    _send({'v': 1, 'type': 'settingsSync', 'autoLockOnDisconnect': autoLockOnDisconnect});
+    _send(_withMac('settingsSync|$deviceId|$autoLockOnDisconnect', {
+      'v': 1,
+      'type': 'settingsSync',
+      'autoLockOnDisconnect': autoLockOnDisconnect,
+    }));
   }
 
   // ── Audit Log ──
@@ -416,7 +508,8 @@ class PcConnection {
       final file = File(filePath);
       if (!await file.exists()) return;
       final bytes = await file.readAsBytes();
-      final filename = file.path.split('/').last;
+      // Use Uri to correctly extract filename on both Windows and Unix paths
+      final filename = file.uri.pathSegments.last;
       final transferId = const Uuid().v4();
 
       final progress = FileTransferProgress(filename: filename, totalBytes: bytes.length, isDownload: false);
@@ -440,11 +533,14 @@ class PcConnection {
 
       _send({'v': 1, 'type': 'fileTransferComplete', 'id': transferId});
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      activeTransfersNotifier.value = {...(activeTransfersNotifier.value..remove(transferId))};
+      final updated = Map<String, FileTransferProgress>.from(activeTransfersNotifier.value);
+      updated.remove(transferId);
+      activeTransfersNotifier.value = updated;
     } catch (_) {}
   }
 
   void _send(Map<String, dynamic> obj) {
+    if (_disposed) return;
     final ch = _channel;
     if (ch == null) { _scheduleReconnect('Not connected'); return; }
     try { ch.sink.add(jsonEncode(obj)); }
@@ -452,24 +548,21 @@ class PcConnection {
   }
 
   void _scheduleReconnect(String reason) {
-    final now = DateTime.now();
-    final last = _lastSendFailure;
-    if (last != null && now.difference(last).inMilliseconds < 400) {
-    } else {
-      _lastSendFailure = now;
-    }
+    if (_disposed) return;
     _setStatus(ConnectionStatus(
       connected: false, needsPairing: false, error: reason,
       pcName: currentStatus.pcName, role: currentStatus.role,
     ));
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(milliseconds: _reconnectDelayMs), () {
+      if (_disposed) return;
       _reconnectDelayMs = (_reconnectDelayMs * 2).clamp(500, 5000);
       unawaited(_connectInternal());
     });
   }
 
   void dispose() {
+    _disposed = true;
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _channel?.sink.close();
@@ -494,9 +587,10 @@ class DiscoveryClient {
         if (obj['type'] != 'discoverResponse') return;
         final name = (obj['pcName'] as String?) ?? dg.address.address;
         final port = (obj['wsPort'] as num?)?.toInt() ?? kWsPortDefault;
+        final wssPort = (obj['wssPort'] as num?)?.toInt();
         final key = '${dg.address.address}:$port';
         if (seen.add(key)) {
-          results.add(DiscoveredPc(name: name, address: dg.address, wsPort: port));
+          results.add(DiscoveredPc(name: name, address: dg.address, wsPort: port, wssPort: wssPort));
         }
       } catch (_) {}
     });

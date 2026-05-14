@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -22,23 +23,42 @@ internal sealed class PairedDevicesStore
 
     public void Load()
     {
+        TryLoad(out _);
+    }
+
+    public bool TryLoad([NotNullWhen(false)] out string? error)
+    {
+        error = null;
         lock (_gate)
         {
-            if (!File.Exists(_path))
+            try
             {
+                if (!File.Exists(_path))
+                {
+                    _tokensByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                    _namesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                    _rolesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
+                    _autoLockByDeviceId = new Dictionary<string, bool>(StringComparer.Ordinal);
+                    return true;
+                }
+
+                var json = File.ReadAllText(_path);
+                var data = JsonSerializer.Deserialize<PairedDevicesFile>(json);
+                _tokensByDeviceId = data?.TokensByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+                _namesByDeviceId = data?.NamesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+                _rolesByDeviceId = data?.RolesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
+                _autoLockByDeviceId = data?.AutoLockByDeviceId ?? new Dictionary<string, bool>(StringComparer.Ordinal);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
                 _tokensByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
                 _namesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
                 _rolesByDeviceId = new Dictionary<string, string>(StringComparer.Ordinal);
                 _autoLockByDeviceId = new Dictionary<string, bool>(StringComparer.Ordinal);
-                return;
+                return false;
             }
-
-            var json = File.ReadAllText(_path);
-            var data = JsonSerializer.Deserialize<PairedDevicesFile>(json);
-            _tokensByDeviceId = data?.TokensByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
-            _namesByDeviceId = data?.NamesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
-            _rolesByDeviceId = data?.RolesByDeviceId ?? new Dictionary<string, string>(StringComparer.Ordinal);
-            _autoLockByDeviceId = data?.AutoLockByDeviceId ?? new Dictionary<string, bool>(StringComparer.Ordinal);
         }
     }
 

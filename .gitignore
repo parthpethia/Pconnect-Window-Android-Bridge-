@@ -24,6 +24,7 @@ Thumbs.db
 # Secrets / local state
 **/paired-devices.json
 **/appsettings.local.json
+desktop/Pconnect.Agent/Assets/opconfig-priv.pem
 
 # Crash logs
 hs_err_pid*.log

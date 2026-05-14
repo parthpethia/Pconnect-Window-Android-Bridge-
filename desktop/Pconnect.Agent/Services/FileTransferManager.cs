@@ -116,16 +116,13 @@ internal sealed class FileTransferManager : IDisposable
                 transfer.FileStream?.Dispose();
                 transfer.FileStream = null;
 
-                // Verify all chunks received
-                if (transfer.ReceivedChunks.Count != transfer.TotalChunks && transfer.ReceivedBytes < transfer.TotalBytes)
+                // Verify file completeness by checking actual file size
+                var actualSize = new FileInfo(transfer.TempFilePath).Length;
+                if (actualSize != transfer.TotalBytes)
                 {
-                    // Not all chunks received, but file might still be valid if size matches
-                    if (new FileInfo(transfer.TempFilePath).Length != transfer.TotalBytes)
-                    {
-                        File.Delete(transfer.TempFilePath);
-                        _activeTransfers.Remove(transferId);
-                        return false;
-                    }
+                    File.Delete(transfer.TempFilePath);
+                    _activeTransfers.Remove(transferId);
+                    return false;
                 }
 
                 // Move temp file to target

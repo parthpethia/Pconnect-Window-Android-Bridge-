@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/connection.dart';
+import '../services/tofu_pin_store.dart';
 import '../main.dart';
 import 'discovery_screen.dart';
+import 'diagnostics_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final PcConnection? conn;
@@ -48,6 +50,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadProfiles() async {
     final profiles = await ProfileStore.load();
     if (mounted) setState(() => _profiles = profiles);
+  }
+
+  static const _tofuResetCooldownMs = 60000;
+
+  Future<void> _resetTlsTrust() async {
+    final prefs = await SharedPreferences.getInstance();
+    final last = prefs.getInt('tofu_reset_cooldown_ms') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - last < _tofuResetCooldownMs) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please wait before resetting TLS trust again.')),
+      );
+      return;
+    }
+
+    await prefs.setInt('tofu_reset_cooldown_ms', now);
+    await TofuPinStore.clearAllTrust();
+    await TofuPinStore.primeFromDisk();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('TLS trust cleared. Reconnect to the PC to confirm the new certificate.')),
+    );
   }
 
   Future<void> _saveAutoLock(bool v) async {
@@ -138,6 +163,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: connected
                 ? TextButton(onPressed: widget.onDisconnect, child: const Text('Disconnect'))
                 : null,
+          ),
+          ListTile(
+            leading: const Icon(Icons.network_check_rounded),
+            title: const Text('Network diagnostics'),
+            subtitle: const Text('LAN, VPN, firewall, and agent ports'),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => DiagnosticsScreen(conn: widget.conn, status: widget.status),
+            )),
+          ),
+          ListTile(
+            leading: const Icon(Icons.refresh_rounded),
+            title: const Text('Reset PC TLS trust (TOFU)'),
+            subtitle: const Text('After PC cert change or reinstall. Next WSS reconnect re-learns fingerprint.'),
+            onTap: _resetTlsTrust,
           ),
           const Divider(),
 

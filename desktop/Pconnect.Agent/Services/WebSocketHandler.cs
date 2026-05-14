@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -19,6 +20,8 @@ internal sealed class WebSocketHandler
     private NotificationListenerService? _notificationListener;
     private readonly Action<string, string?>? _onDeviceAuthed;
     private readonly Action<string>? _onDeviceDisconnected;
+    private SafeStartupOptions _safe = SafeStartupOptions.Normal;
+    private readonly Func<(bool WsServing, bool DiscoveryUdp)>? _networkBindingState;
 
     // Capabilities list sent during handshake
     private static readonly string[] Capabilities =
@@ -29,6 +32,13 @@ internal sealed class WebSocketHandler
         "auditLog", "notification"
     };
 
+    internal void ConfigureSafeMode(SafeStartupOptions safe) => _safe = safe;
+
+    private IReadOnlyList<string> AdvertisedCapabilities =>
+        !_safe.IsSafeMode
+            ? Capabilities
+            : Capabilities.Where(static c => c is not ("screenCapture" or "customCommands")).ToArray();
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool LockWorkStation();
 
@@ -38,7 +48,8 @@ internal sealed class WebSocketHandler
         PcActions pc,
         IUiActions ui,
         Action<string, string?>? onDeviceAuthed = null,
-        Action<string>? onDeviceDisconnected = null)
+        Action<string>? onDeviceDisconnected = null,
+        Func<(bool WsServing, bool DiscoveryUdp)>? networkBindingState = null)
     {
         _pairing = pairing;
         _paired = paired;
@@ -46,6 +57,7 @@ internal sealed class WebSocketHandler
         _ui = ui;
         _onDeviceAuthed = onDeviceAuthed;
         _onDeviceDisconnected = onDeviceDisconnected;
+        _networkBindingState = networkBindingState;
         _shutdownPassword = Environment.GetEnvironmentVariable("PCONNECT_SHUTDOWN_PIN") ?? "1326";
     }
 
@@ -57,10 +69,38 @@ internal sealed class WebSocketHandler
         var authed = false;
         ScreenCaptureService? screenCapture = null;
         System.Threading.Timer? autoLockTimer = null;
+        var sessionNonceBytes = RandomNumberGenerator.GetBytes(16);
+        byte[]? integrityKey = null;
+        var lastCmdSeq = 0;
+
+        bool PassesClientPolicy(Dictionary<string, JsonElement> m, out string? err)
+        {
+            err = null;
+            var ver = m.GetStringOrNull("clientVersion") ?? "0.0.0";
+            if (!SemverUtility.IsAtLeast(ver, OperationalConfigRuntime.MinMobileSemver))
+            {
+                err = $"Mobile app update required (minimum {OperationalConfigRuntime.MinMobileSemver}).";
+                return false;
+            }
+
+            var proto = m.GetIntOrDefault("proto", 1);
+            if (proto < OperationalConfigRuntime.MinClientProto)
+            {
+                err = $"Mobile app update required (protocol version {OperationalConfigRuntime.MinClientProto} or newer).";
+                return false;
+            }
+
+            return true;
+        }
 
         // Helper to start notification mirroring after auth
         async Task StartNotificationListenerAsync()
         {
+            if (_safe.DisableNotificationMirror)
+            {
+                return;
+            }
+
             try
             {
                 var listener = new NotificationListenerService(
@@ -90,7 +130,14 @@ internal sealed class WebSocketHandler
             }
         }
 
-        await SendAsync(ws, new { v = 1, type = "welcome", pcName = Environment.MachineName }, ct);
+        await SendAsync(ws, new
+        {
+            v = 1,
+            type = "welcome",
+            pcName = Environment.MachineName,
+            sessionNonce = Convert.ToHexString(sessionNonceBytes),
+            wssPort = AgentRuntime.DefaultWssPort,
+        }, ct);
 
         try
         {
@@ -116,6 +163,12 @@ internal sealed class WebSocketHandler
                 {
                     if (typeKey == "hello")
                     {
+                        if (!PassesClientPolicy(msg, out var policyErr))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = policyErr }, ct);
+                            continue;
+                        }
+
                         deviceId = msg.GetStringOrNull("deviceId");
                         var token = msg.GetStringOrNull("token");
                         deviceName = msg.GetStringOrNull("deviceName");
@@ -127,6 +180,12 @@ internal sealed class WebSocketHandler
                         {
                             authed = true;
                             deviceRole = _paired.GetRole(deviceId);
+                            var proto = msg.GetIntOrDefault("proto", 1);
+                            if (proto >= 2)
+                            {
+                                integrityKey = CommandIntegrity.TryDeriveIntegrityKey(token, sessionNonceBytes);
+                            }
+
                             _onDeviceAuthed?.Invoke(deviceId, deviceName);
                             _auditLog.Log(deviceName, "connected");
                             await SendAsync(ws, new
@@ -134,7 +193,7 @@ internal sealed class WebSocketHandler
                                 v = 1, type = "helloAck",
                                 pcName = Environment.MachineName,
                                 role = deviceRole,
-                                capabilities = Capabilities
+                                capabilities = AdvertisedCapabilities
                             }, ct);
                             await StartNotificationListenerAsync();
                         }
@@ -147,6 +206,12 @@ internal sealed class WebSocketHandler
 
                     if (typeKey == "pair")
                     {
+                        if (!PassesClientPolicy(msg, out var policyErrPair))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = policyErrPair }, ct);
+                            continue;
+                        }
+
                         deviceId = msg.GetStringOrNull("deviceId") ?? deviceId;
                         var code = msg.GetStringOrNull("code");
                         deviceName = msg.GetStringOrNull("deviceName");
@@ -166,6 +231,12 @@ internal sealed class WebSocketHandler
                         var token = _paired.PairNewDevice(deviceId, deviceName);
                         authed = true;
                         deviceRole = _paired.GetRole(deviceId);
+                        var proto = msg.GetIntOrDefault("proto", 1);
+                        if (proto >= 2)
+                        {
+                            integrityKey = CommandIntegrity.TryDeriveIntegrityKey(token, sessionNonceBytes);
+                        }
+
                         _onDeviceAuthed?.Invoke(deviceId, deviceName);
                         _auditLog.Log(deviceName, "paired");
 
@@ -175,7 +246,7 @@ internal sealed class WebSocketHandler
                             v = 1, type = "helloAck",
                             pcName = Environment.MachineName,
                             role = deviceRole,
-                            capabilities = Capabilities
+                            capabilities = AdvertisedCapabilities
                         }, ct);
                         await StartNotificationListenerAsync();
                         continue;
@@ -193,6 +264,45 @@ internal sealed class WebSocketHandler
                 bool RequireMediaOrAdmin()
                 {
                     return deviceRole is "admin" or "media_only";
+                }
+
+                if (OperationalConfigRuntime.EmergencyDisableRemote)
+                {
+                    await SendAsync(ws, new { v = 1, type = "error", message = "Agent paused by operator policy" }, ct);
+                    continue;
+                }
+
+                bool TryConsumeMac(string canon, out string? err)
+                {
+                    err = null;
+                    var seq = msg.GetIntOrDefault("cmdSeq", 0);
+                    var mac = msg.GetStringOrNull("cmdMac");
+                    var require = OperationalConfigRuntime.RequireSensitiveMac || integrityKey is not null;
+                    if (!require)
+                    {
+                        return true;
+                    }
+
+                    if (integrityKey is null)
+                    {
+                        err = "Upgrade mobile app for verified commands";
+                        return false;
+                    }
+
+                    if (seq <= lastCmdSeq)
+                    {
+                        err = "Stale cmdSeq";
+                        return false;
+                    }
+
+                    if (!CommandIntegrity.TryVerifyMac(integrityKey, seq, canon, mac))
+                    {
+                        err = "Invalid cmdMac";
+                        return false;
+                    }
+
+                    lastCmdSeq = seq;
+                    return true;
                 }
 
                 // ── Authenticated command dispatch ──
@@ -224,6 +334,14 @@ internal sealed class WebSocketHandler
                             await SendAsync(ws, new { v = 1, type = "error", message = "Missing command" }, ct);
                             break;
                         }
+
+                        var argCanon = args is null ? "" : string.Join('\x1e', args);
+                        if (!TryConsumeMac($"launch|{command}|{argCanon}", out var macErrL))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = macErrL ?? "Command verification failed" }, ct);
+                            break;
+                        }
+
                         _pc.Launch(command!, args);
                         _auditLog.Log(deviceName, $"launch:{command}");
                         await SendAsync(ws, new { v = 1, type = "ok" }, ct);
@@ -237,6 +355,13 @@ internal sealed class WebSocketHandler
                             await SendAsync(ws, new { v = 1, type = "error", message = "Missing exePath" }, ct);
                             break;
                         }
+
+                        if (!TryConsumeMac($"launchapp|{exePath}", out var macErrLa))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = macErrLa ?? "Command verification failed" }, ct);
+                            break;
+                        }
+
                         _pc.Launch(exePath!, null);
                         _auditLog.Log(deviceName, $"launchApp:{exePath}");
                         await SendAsync(ws, new { v = 1, type = "ok" }, ct);
@@ -353,6 +478,13 @@ internal sealed class WebSocketHandler
                             await SendAsync(ws, new { v = 1, type = "error", message = "Invalid shutdown password" }, ct);
                             break;
                         }
+
+                        if (!TryConsumeMac($"shutdown|{password.Trim()}", out var macErrS))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = macErrS ?? "Command verification failed" }, ct);
+                            break;
+                        }
+
                         _auditLog.Log(deviceName, "shutdown");
                         await SendAsync(ws, _pc.Shutdown()
                             ? new { v = 1, type = "ok" }
@@ -464,6 +596,11 @@ internal sealed class WebSocketHandler
                     // ── New: Screen capture ──
                     case "screencapturestart":
                         if (!RequireAdmin()) { await SendRoleError(ws, ct); break; }
+                        if (_safe.DisableScreenCapture)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Screen capture disabled (safe mode)" }, ct);
+                            break;
+                        }
                         screenCapture?.Dispose();
                         var interval = msg.GetIntOrDefault("intervalMs", 1000);
                         var captureWidth = msg.GetIntOrDefault("width", 720);
@@ -500,6 +637,11 @@ internal sealed class WebSocketHandler
 
                     // ── New: Custom commands ──
                     case "getcommands":
+                        if (_safe.DisableCustomCommands)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Custom commands disabled (safe mode)" }, ct);
+                            break;
+                        }
                         _customCommands.Reload();
                         var cmds = _customCommands.GetCommands();
                         await SendAsync(ws, new
@@ -511,7 +653,24 @@ internal sealed class WebSocketHandler
 
                     case "runcommand":
                         if (!RequireAdmin()) { await SendRoleError(ws, ct); break; }
+                        if (_safe.DisableCustomCommands)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Custom commands disabled (safe mode)" }, ct);
+                            break;
+                        }
                         var cmdIdx = msg.GetIntOrDefault("index", -1);
+                        if (cmdIdx < 0)
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = "Invalid index" }, ct);
+                            break;
+                        }
+
+                        if (!TryConsumeMac($"runcommand|{cmdIdx}", out var macErrR))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = macErrR ?? "Command verification failed" }, ct);
+                            break;
+                        }
+
                         var cmdOk = _customCommands.RunCommand(cmdIdx);
                         _auditLog.Log(deviceName, $"runCommand:{cmdIdx}");
                         await SendAsync(ws, cmdOk
@@ -519,15 +678,41 @@ internal sealed class WebSocketHandler
                             : (object)new { v = 1, type = "error", message = "Command failed" }, ct);
                         break;
 
+                    case "networkdiagnostics":
+                        if (!RequireAdmin()) { await SendRoleError(ws, ct); break; }
+                        var flags = _networkBindingState?.Invoke() ?? (false, false);
+                        var nd = NetworkDiagnostics.Collect(AgentRuntime.DefaultWsPort, AgentRuntime.DefaultDiscoveryPort, flags.WsServing, flags.DiscoveryUdp);
+                        await SendAsync(ws, new
+                        {
+                            v = 1,
+                            type = "networkDiagnostics",
+                            lanIpv4 = nd.LanIpv4Candidates,
+                            vpnOrTunnelLikely = nd.VpnOrTunnelLikely,
+                            ipv6OnlyRisk = nd.Ipv6OnlyRisk,
+                            webSocketPortInUse = nd.WebSocketPortConflict,
+                            discoveryPortInUse = nd.DiscoveryPortConflict,
+                            hints = nd.ActionHints,
+                        }, ct);
+                        break;
+
                     // ── New: Settings sync ──
                     case "settingssync":
+                    {
+                        var autoLock = msg.GetBoolOrDefault("autoLockOnDisconnect", false);
+                        if (!TryConsumeMac($"settingsSync|{deviceId ?? ""}|{autoLock}", out var macErrSt))
+                        {
+                            await SendAsync(ws, new { v = 1, type = "error", message = macErrSt ?? "Command verification failed" }, ct);
+                            break;
+                        }
+
                         if (deviceId is not null)
                         {
-                            var autoLock = msg.GetBoolOrDefault("autoLockOnDisconnect", false);
                             _paired.SetAutoLockOnDisconnect(deviceId, autoLock);
                         }
+
                         await SendAsync(ws, new { v = 1, type = "ok" }, ct);
                         break;
+                    }
 
                     // ── New: Audit logs ──
                     case "getlogs":
@@ -586,7 +771,7 @@ internal sealed class WebSocketHandler
 
     private static async Task<Dictionary<string, JsonElement>?> ReceiveJsonAsync(WebSocket ws, CancellationToken ct)
     {
-        var buffer = new byte[64 * 1024];
+        var buffer = new byte[256 * 1024];
         using var ms = new MemoryStream();
 
         while (true)

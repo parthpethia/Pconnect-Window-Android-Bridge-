@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import 'services/connection.dart';
+import 'services/tofu_pin_store.dart';
 import 'screens/home_screen.dart';
 import 'screens/control_screen.dart';
 import 'screens/remote_control_screen.dart';
@@ -134,7 +135,7 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   final _uuid = const Uuid();
   int _currentIndex = 0;
 
@@ -143,50 +144,72 @@ class _MainShellState extends State<MainShell> {
   String? _token;
   String? _lastHost;
   int _lastPort = kWsPortDefault;
+  int? _lastWssPort;
   ConnectionStatus _status = ConnectionStatus.disconnected;
+  StreamSubscription<ConnectionStatus>? _statusSub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _statusSub?.cancel();
+    _conn?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && _lastHost != null && _token != null) {
+      unawaited(_connectHost(_lastHost!, _lastPort, wssPort: _lastWssPort));
+    }
+  }
+
   Future<void> _bootstrap() async {
+    await TofuPinStore.primeFromDisk();
     final prefs = await SharedPreferences.getInstance();
     _deviceId = prefs.getString('device_id') ?? _uuid.v4();
     await prefs.setString('device_id', _deviceId);
     _token = prefs.getString('token');
     _lastHost = prefs.getString('last_pc_host');
     _lastPort = prefs.getInt('last_pc_port') ?? kWsPortDefault;
+    _lastWssPort = prefs.getInt('last_pc_wss_port');
 
     if (_lastHost != null && _token != null) {
-      unawaited(_connectHost(_lastHost!, _lastPort));
+      unawaited(_connectHost(_lastHost!, _lastPort, wssPort: _lastWssPort));
     }
   }
 
-  @override
-  void dispose() {
-    _conn?.dispose();
-    super.dispose();
-  }
-
-  Future<void> _connectHost(String host, int port) async {
+  Future<void> _connectHost(String host, int port, {int? wssPort}) async {
+    _statusSub?.cancel();
     _conn?.dispose();
     final conn = PcConnection(deviceId: _deviceId);
-    setState(() { _conn = conn; _status = ConnectionStatus.disconnected; });
+    setState(() {
+      _conn = conn;
+      _status = ConnectionStatus.disconnected;
+    });
 
-    conn.statusStream.listen((s) {
+    _statusSub = conn.statusStream.listen((s) {
       if (!mounted) return;
       setState(() => _status = s);
     });
 
-    await conn.connect(host: host, port: port, token: _token);
+    await conn.connect(host: host, port: port, token: _token, wssPort: wssPort ?? _lastWssPort);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('last_pc_host', host);
     await prefs.setInt('last_pc_port', port);
+    final wp = wssPort ?? _lastWssPort ?? kDefaultWssPort;
+    await prefs.setInt('last_pc_wss_port', wp);
     _lastHost = host;
     _lastPort = port;
+    _lastWssPort = wp;
   }
 
   Future<void> _pair(String code) async {
@@ -203,7 +226,7 @@ class _MainShellState extends State<MainShell> {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => DiscoveryScreen(
         deviceId: _deviceId,
-        onConnect: (host, port) => _connectHost(host, port),
+        onConnect: (host, port, wssPort) => _connectHost(host, port, wssPort: wssPort),
         onPair: (code) => _pair(code),
         status: _status,
       ),
@@ -227,7 +250,10 @@ class _MainShellState extends State<MainShell> {
         status: _status,
         onDisconnect: () {
           _conn?.dispose();
-          setState(() { _conn = null; _status = ConnectionStatus.disconnected; });
+          setState(() {
+            _conn = null;
+            _status = ConnectionStatus.disconnected;
+          });
         },
       ),
       LogsScreen(conn: conn, status: _status),

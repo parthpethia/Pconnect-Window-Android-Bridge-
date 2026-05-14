@@ -126,7 +126,7 @@ internal sealed class ScreenCaptureService : IDisposable
 
     private static ImageCodecInfo? GetJpegCodecInfo()
     {
-        foreach (var codec in ImageCodecInfo.GetImageDecoders())
+        foreach (var codec in ImageCodecInfo.GetImageEncoders())
         {
             if (codec.FormatID == ImageFormat.Jpeg.Guid)
             {

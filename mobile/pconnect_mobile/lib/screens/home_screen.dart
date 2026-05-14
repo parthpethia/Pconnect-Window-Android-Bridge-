@@ -589,12 +589,12 @@ class _ScreenPreviewWithTrackpadState extends State<_ScreenPreviewWithTrackpad> 
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.touch_app, size: 36, color: Colors.white24),
+                    Icon(Icons.touch_app, size: 36, color: cs.onSurface.withOpacity(0.15)),
                     const SizedBox(height: 4),
                     Text(
                       'Tap · 2-finger right click\nLong press drag · 2-finger scroll',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 10, color: Colors.white24),
+                      style: TextStyle(fontSize: 10, color: cs.onSurface.withOpacity(0.15)),
                     ),
                   ],
                 ),

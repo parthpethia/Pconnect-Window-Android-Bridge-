@@ -12,10 +12,10 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly CancellationTokenSource _ipcCts = new();
     private readonly Task _ipcTask;
 
-    public TrayAppContext()
+    public TrayAppContext(int abnormalExitStreak)
     {
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-        _runtime = new AgentRuntime(new UiActions(this));
+        _runtime = new AgentRuntime(new UiActions(this), abnormalExitStreak);
         _runtime.Start();
 
         // Allow subsequent EXE launches to bring the dashboard back.

@@ -15,9 +15,9 @@ internal sealed class DashboardForm : Form
     {
         _runtime = runtime;
 
-        Text = "Pconnect Dashboard";
+        Text = _runtime.SafeStartup.IsSafeMode ? "Pconnect Dashboard (safe mode)" : "Pconnect Dashboard";
         Width = 520;
-        Height = 240;
+        Height = _runtime.SafeStartup.IsSafeMode ? 276 : 240;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -35,17 +35,35 @@ internal sealed class DashboardForm : Form
 
         var subtitle = new Label
         {
-            Text = "Desktop agent status",
+            Text = "LAN-only control • Hold Shift at launch for safe mode • Tray menu: pairing & diagnostics",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             Left = 18,
             Top = 40,
         };
 
+        var safeOffset = 0;
+        if (_runtime.SafeStartup.IsSafeMode)
+        {
+            safeOffset = 40;
+            var safeBanner = new Label
+            {
+                Text = "Safe mode: screen capture, custom commands, notifications mirror, and UDP discovery are off. " +
+                       string.Join("; ", _runtime.SafeStartup.Reasons),
+                Left = 18,
+                Top = 56,
+                Width = ClientSize.Width - 36,
+                Height = 36,
+                ForeColor = Color.DarkOrange,
+                AutoSize = false,
+            };
+            Controls.Add(safeBanner);
+        }
+
         var grid = new TableLayoutPanel
         {
             Left = 18,
-            Top = 72,
+            Top = 72 + safeOffset,
             Width = ClientSize.Width - 36,
             Height = 80,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
@@ -70,7 +88,7 @@ internal sealed class DashboardForm : Form
         _toggleServerButton = new Button
         {
             Left = 18,
-            Top = 170,
+            Top = 170 + safeOffset,
             Width = 160,
             Height = 32,
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
@@ -82,7 +100,7 @@ internal sealed class DashboardForm : Form
         {
             Text = "Close",
             Left = 190,
-            Top = 170,
+            Top = 170 + safeOffset,
             Width = 100,
             Height = 32,
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
@@ -96,7 +114,7 @@ internal sealed class DashboardForm : Form
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             Left = 18,
-            Top = 206,
+            Top = 206 + safeOffset,
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
         };
 

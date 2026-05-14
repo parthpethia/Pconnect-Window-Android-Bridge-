@@ -27,6 +27,9 @@ internal static class Program
             return;
         }
 
+        var abnormalExitStreak = StartupCrashTracker.BeginRun();
+        Application.ApplicationExit += (_, _) => StartupCrashTracker.MarkCleanExit();
+
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             if (e.ExceptionObject is Exception ex)
@@ -40,7 +43,7 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new TrayAppContext());
+            Application.Run(new TrayAppContext(abnormalExitStreak));
         }
         catch (Exception ex)
         {
@@ -61,6 +64,7 @@ internal static class Program
             sb.AppendLine(ex.ToString());
             sb.AppendLine();
             File.AppendAllText(path, sb.ToString());
+            CrashLog.Write(ex, null);
         }
         catch
         {

@@ -11,14 +11,16 @@ internal sealed class DiscoveryResponder : IDisposable
 
     private readonly int _listenPort;
     private readonly int _wsPort;
+    private readonly int _wssPort;
     private UdpClient? _udp;
     private CancellationTokenSource? _cts;
     private Task? _task;
 
-    public DiscoveryResponder(int listenPort, int wsPort)
+    public DiscoveryResponder(int listenPort, int wsPort, int wssPort)
     {
         _listenPort = listenPort;
         _wsPort = wsPort;
+        _wssPort = wssPort;
     }
 
     public void Start()
@@ -128,6 +130,7 @@ internal sealed class DiscoveryResponder : IDisposable
                 type = "discoverResponse",
                 pcName = Environment.MachineName,
                 wsPort = _wsPort,
+                wssPort = _wssPort,
             });
 
             var bytes = Encoding.UTF8.GetBytes(payload);

@@ -14,9 +14,7 @@ internal sealed class RecentFilesHelper
 
         try
         {
-            var recentFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                @"AppData\Microsoft\Windows\Recent");
+            var recentFolder = Environment.GetFolderPath(Environment.SpecialFolder.Recent);
 
             if (!Directory.Exists(recentFolder))
             {
@@ -42,7 +40,7 @@ internal sealed class RecentFilesHelper
                         {
                             Path = targetPath,
                             Name = Path.GetFileName(targetPath),
-                            Modified = (long)fileInfo.LastAccessTime.Subtract(DateTime.UnixEpoch).TotalMilliseconds,
+                            Modified = (long)fileInfo.LastWriteTime.Subtract(DateTime.UnixEpoch).TotalMilliseconds,
                             Size = fileInfo.Length
                         });
                     }

@@ -6,8 +6,12 @@ internal sealed class PairingService : IDisposable
 {
     private readonly object _gate = new();
     private readonly System.Threading.Timer _timer;
+    private string _currentCode = GenerateCode();
 
-    public string CurrentCode { get; private set; } = GenerateCode();
+    public string CurrentCode
+    {
+        get { lock (_gate) { return _currentCode; } }
+    }
 
     public PairingService()
     {
@@ -38,7 +42,7 @@ internal sealed class PairingService : IDisposable
     {
         lock (_gate)
         {
-            CurrentCode = GenerateCode();
+            _currentCode = GenerateCode();
         }
     }
 

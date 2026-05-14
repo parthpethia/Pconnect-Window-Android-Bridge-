@@ -16,6 +16,7 @@ class ConnectionProfile {
   String name;
   final String ip;
   final int port;
+  final int? wssPort;
   String? deviceToken;
   DateTime? lastConnected;
 
@@ -23,6 +24,7 @@ class ConnectionProfile {
     required this.name,
     required this.ip,
     required this.port,
+    this.wssPort,
     this.deviceToken,
     this.lastConnected,
   });
@@ -31,6 +33,7 @@ class ConnectionProfile {
     'name': name,
     'ip': ip,
     'port': port,
+    if (wssPort != null) 'wssPort': wssPort,
     'deviceToken': deviceToken,
     'lastConnected': lastConnected?.toIso8601String(),
   };
@@ -39,6 +42,7 @@ class ConnectionProfile {
     name: j['name'] as String? ?? '',
     ip: j['ip'] as String? ?? '',
     port: (j['port'] as num?)?.toInt() ?? kWsPortDefault,
+    wssPort: (j['wssPort'] as num?)?.toInt(),
     deviceToken: j['deviceToken'] as String?,
     lastConnected: j['lastConnected'] != null ? DateTime.tryParse(j['lastConnected'] as String) : null,
   );
@@ -88,7 +92,7 @@ class ProfileStore {
 
 class DiscoveryScreen extends StatefulWidget {
   final String deviceId;
-  final void Function(String host, int port) onConnect;
+  final void Function(String host, int port, int? wssPort) onConnect;
   final void Function(String code) onPair;
   final ConnectionStatus status;
 
@@ -124,9 +128,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   @override
   void didUpdateWidget(DiscoveryScreen old) {
     super.didUpdateWidget(old);
-    // Auto-dismiss pairing dialog on successful auth
+    // Auto-dismiss discovery on successful auth, but only if this route is current
     if (widget.status.connected && !old.status.connected) {
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        final route = ModalRoute.of(context);
+        if (route != null && route.isCurrent) {
+          Navigator.of(context).pop();
+        }
+      }
     }
   }
 
@@ -145,13 +154,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (mounted) setState(() => _scanning = false);
   }
 
-  void _connectTo(String host, int port) {
-    widget.onConnect(host, port);
+  void _connectTo(String host, int port, {int? wssPort}) {
+    widget.onConnect(host, port, wssPort);
     // Save / update profile
     ProfileStore.upsert(ConnectionProfile(
       name: host,
       ip: host,
       port: port,
+      wssPort: wssPort,
       lastConnected: DateTime.now(),
     ));
     _showPairingOrPop();
@@ -188,7 +198,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
           Navigator.of(context).pop();
           _ipController.text = ip;
           _portController.text = port.toString();
-          _connectTo(ip, port);
+          _connectTo(ip, port, wssPort: kDefaultWssPort);
           if (code != null && code.isNotEmpty) {
             Future.delayed(const Duration(milliseconds: 600), () {
               if (mounted) widget.onPair(code);
@@ -296,7 +306,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                   title: Text(pc.name),
                   subtitle: Text('${pc.address.address}:${pc.wsPort}'),
                   trailing: FilledButton.tonal(
-                    onPressed: () => _connectTo(pc.address.address, pc.wsPort),
+                    onPressed: () => _connectTo(pc.address.address, pc.wsPort, wssPort: pc.wssPort),
                     child: const Text('Connect'),
                   ),
                 ),
@@ -330,7 +340,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                         },
                       ),
                       FilledButton.tonal(
-                        onPressed: () => _connectTo(p.ip, p.port),
+                        onPressed: () => _connectTo(p.ip, p.port, wssPort: p.wssPort),
                         child: const Text('Connect'),
                       ),
                     ],
@@ -385,7 +395,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                       onPressed: () {
                         final ip = _ipController.text.trim();
                         final port = int.tryParse(_portController.text.trim()) ?? kWsPortDefault;
-                        if (ip.isNotEmpty) _connectTo(ip, port);
+                        if (ip.isNotEmpty) _connectTo(ip, port, wssPort: kDefaultWssPort);
                       },
                       icon: const Icon(Icons.link_rounded),
                       label: const Text('Connect'),

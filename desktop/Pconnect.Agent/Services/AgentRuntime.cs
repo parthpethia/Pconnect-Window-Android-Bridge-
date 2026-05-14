@@ -11,6 +11,7 @@ namespace Pconnect.Agent.Services;
 internal sealed class AgentRuntime : IDisposable
 {
     public const int DefaultWsPort = 47821;
+    public const int DefaultWssPort = 47824;
     public const int DefaultDiscoveryPort = 47822;
 
     private readonly IUiActions _ui;
@@ -30,6 +31,9 @@ internal sealed class AgentRuntime : IDisposable
     private readonly PcActions _pc;
     private readonly WebSocketHandler _ws;
     private readonly DiscoveryResponder _discovery;
+    private readonly int _abnormalExitStreak;
+
+    public SafeStartupOptions SafeStartup { get; private set; } = SafeStartupOptions.Normal;
 
     public bool IsDiscoveryEnabled { get; private set; }
     public string? DiscoveryStartError { get; private set; }
@@ -68,19 +72,27 @@ internal sealed class AgentRuntime : IDisposable
         }
     }
 
-    public AgentRuntime(IUiActions ui)
+    public AgentRuntime(IUiActions ui, int abnormalExitStreak = 0)
     {
         _ui = ui;
+        _abnormalExitStreak = abnormalExitStreak;
         Pairing = new PairingService();
         PairedDevices = new PairedDevicesStore();
         _pc = new PcActions();
-        _ws = new WebSocketHandler(Pairing, PairedDevices, _pc, _ui, OnDeviceAuthed, OnDeviceDisconnected);
-        _discovery = new DiscoveryResponder(DefaultDiscoveryPort, DefaultWsPort);
+        _ws = new WebSocketHandler(Pairing, PairedDevices, _pc, _ui, OnDeviceAuthed, OnDeviceDisconnected,
+            () => (IsServerRunning, IsDiscoveryEnabled));
+        _discovery = new DiscoveryResponder(DefaultDiscoveryPort, DefaultWsPort, DefaultWssPort);
     }
 
     public void Start()
     {
-        PairedDevices.Load();
+        CrashRetention.Sweep();
+        OperationalConfigRuntime.Reload();
+
+        var pairedOk = PairedDevices.TryLoad(out _);
+        SafeStartup = SafeStartupResolver.Resolve(Environment.GetCommandLineArgs(), _abnormalExitStreak, !pairedOk);
+        _ws.ConfigureSafeMode(SafeStartup);
+
         Pairing.StartRotation();
         StartServer();
     }
@@ -100,9 +112,17 @@ internal sealed class AgentRuntime : IDisposable
 
         try
         {
-            _discovery.Start();
-            IsDiscoveryEnabled = true;
-            DiscoveryStartError = null;
+            if (!SafeStartup.DisableDiscoveryUdp)
+            {
+                _discovery.Start();
+                IsDiscoveryEnabled = true;
+                DiscoveryStartError = null;
+            }
+            else
+            {
+                IsDiscoveryEnabled = false;
+                DiscoveryStartError = "Safe mode: UDP discovery is disabled. Use manual IP or Copy WebSocket URL from the tray menu.";
+            }
         }
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
         {
@@ -239,7 +259,19 @@ internal sealed class AgentRuntime : IDisposable
         try
         {
             var builder = WebApplication.CreateBuilder();
-            builder.WebHost.UseKestrel(options => { options.ListenAnyIP(DefaultWsPort); });
+            var tlsCert = LanCertificateProvider.GetOrCreate();
+            builder.WebHost.ConfigureKestrel(options =>
+            {
+                options.ListenAnyIP(DefaultWsPort);
+                try
+                {
+                    options.ListenAnyIP(DefaultWssPort, listen => listen.UseHttps(tlsCert));
+                }
+                catch
+                {
+                    // WSS bind failed (port conflict); cleartext WS remains.
+                }
+            });
 
             var app = builder.Build();
 

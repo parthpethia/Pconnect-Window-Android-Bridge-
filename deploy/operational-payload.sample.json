@@ -1,0 +1,6 @@
+{
+  "requireSensitiveMac": false,
+  "emergencyDisableRemote": false,
+  "minMobileSemver": "0.2.0",
+  "minClientProto": 1
+}
